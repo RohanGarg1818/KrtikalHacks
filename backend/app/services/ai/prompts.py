@@ -74,3 +74,16 @@ def chat_prompt(
         lines.append(f"{entry.get('role', 'user')}: {entry.get('content', '')}")
     lines.append(f"user: {message}")
     return system, "\n".join(lines)
+
+
+def parse_alert_rule_prompt(text: str) -> tuple[str, str]:
+    system = (
+        GUARDRAIL_RULES
+        + "\nTask: convert the seller's natural-language alert request into a "
+        "structured rule. kind must be one of oos_any, rival_oos, "
+        "price_change_pct, rating_below, custom. threshold is a number when "
+        "relevant (percent for price, rating points for rating). Reply with "
+        'JSON: {"kind": "...", "threshold": ..., "rule_text": "...", '
+        '"rule_json": {...}}'
+    )
+    return system, f"Request:\n{text}"

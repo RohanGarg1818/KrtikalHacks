@@ -14,13 +14,20 @@ from google.genai import types
 
 from .base import (
     AIProviderError,
+    AlertRuleOut,
     ChatOut,
     RecommendOut,
     ReviewsOut,
     SummaryOut,
     parse_json_payload,
 )
-from .prompts import chat_prompt, recommend_prompt, reviews_prompt, summarize_prompt
+from .prompts import (
+    chat_prompt,
+    parse_alert_rule_prompt,
+    recommend_prompt,
+    reviews_prompt,
+    summarize_prompt,
+)
 
 logger = logging.getLogger("shelfsense.ai.gemini")
 
@@ -93,3 +100,12 @@ class GeminiAIProvider:
             raise
         except Exception as exc:
             raise AIProviderError(f"Bad chat payload: {exc}") from exc
+
+    async def parse_alert_rule(self, text: str) -> AlertRuleOut:
+        system, user = parse_alert_rule_prompt(text)
+        try:
+            return AlertRuleOut.model_validate(await self._generate(system, user))
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Bad alert-rule payload: {exc}") from exc

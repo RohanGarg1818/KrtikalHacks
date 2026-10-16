@@ -95,6 +95,7 @@ async def build_context(
         "hot_zone_count": len(heatmap["hot_zones"]),
         "oos_pins": oos_pins,
         "oos_platforms": oos_platforms,
+        "all_pins": sorted({pin["pincode"] for pin in pins}),
         "this_week_avg_price": weekly["this_week"]["avg_price"],
         "last_week_avg_price": weekly["last_week"]["avg_price"],
         "this_week_oos_count": weekly["this_week"]["oos_count"],
@@ -306,10 +307,14 @@ async def refresh_intelligence(
 
 
 async def decide_recommendation(
-    session: AsyncSession, recommendation: Recommendation, *, decision: str
+    session: AsyncSession,
+    recommendation: Recommendation,
+    *,
+    decision: str,
+    decided_via: str = "web",
 ) -> Recommendation:
     recommendation.status = decision
-    recommendation.decided_via = "user"
+    recommendation.decided_via = decided_via
     recommendation.decided_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(recommendation)

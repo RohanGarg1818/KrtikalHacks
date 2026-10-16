@@ -282,7 +282,7 @@ async def test_summary_endpoint_generates_with_fallback_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommendations_generate_accept_decline() -> None:
+async def test_recommendations_generate_approve_dismiss() -> None:
     user = await make_user("Riya Sharma")
     product_id = await make_product(user.id)
     await seed_check_data(product_id)
@@ -298,15 +298,15 @@ async def test_recommendations_generate_accept_decline() -> None:
         first = body["recommendations"][0]
         assert first["status"] == "pending"
 
-        accept = await client.post(f"/api/recommendations/{first['id']}/accept")
-        assert accept.status_code == 200
-        assert accept.json()["status"] == "accepted"
-        assert accept.json()["decided_via"] == "user"
+        approve = await client.post(f"/api/recommendations/{first['id']}/approve")
+        assert approve.status_code == 200
+        assert approve.json()["status"] == "approved"
+        assert approve.json()["decided_via"] == "web"
 
         second = body["recommendations"][1]
-        decline = await client.post(f"/api/recommendations/{second['id']}/decline")
-        assert decline.status_code == 200
-        assert decline.json()["status"] == "declined"
+        dismiss = await client.post(f"/api/recommendations/{second['id']}/dismiss")
+        assert dismiss.status_code == 200
+        assert dismiss.json()["status"] == "dismissed"
 
         listing = await client.get(
             f"/api/products/{product_id}/ai/recommendations", params={"status": "pending"}

@@ -12,6 +12,8 @@ from ..models.chat import ChatConversation, ChatMessage
 from ..models.user import User
 from ..schemas.chat import (
     ChatMessageOut,
+    ChatRequest,
+    ChatResponse,
     ConversationCreate,
     ConversationDetail,
     ConversationListResponse,
@@ -72,6 +74,67 @@ async def get_owned_conversation(
     if row is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return row
+
+
+async def _answer_message(
+    session: AsyncSession, conversation: ChatConversation, content: str
+) -> MessageResponse:
+    message_count = await session.scalar(
+        select(func.count(ChatMessage.id)).where(
+            ChatMessage.conversation_id == conversation.id
+        )
+    )
+    if (message_count or 0) >= MAX_MESSAGES_PER_CONVERSATION:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Conversation limit of {MAX_MESSAGES_PER_CONVERSATION} messages reached",
+        )
+    history_rows = list(
+        (
+            await session.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conversation.id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(HISTORY_WINDOW)
+            )
+        ).all()
+    )
+    history = [
+        {"role": row.role, "content": row.content}
+        for row in reversed(history_rows)
+    ]
+    context = EMPTY_CONTEXT
+    if conversation.product_id:
+        built = await build_context(session, conversation.product_id)
+        if built is not None:
+            context = built
+    provider = get_ai_provider()
+    result, source = await with_fallback(
+        provider, "chat", context, content, history
+    )
+    user_message = ChatMessage(
+        conversation_id=conversation.id,
+        role="user",
+        content=content,
+    )
+    assistant_message = ChatMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=result.reply[:8000],
+        actions=[action.model_dump() for action in result.actions],
+        evidence=[item.model_dump() for item in result.evidence],
+    )
+    session.add(user_message)
+    session.add(assistant_message)
+    await session.commit()
+    await session.refresh(assistant_message)
+    reply = _message_payload(assistant_message)
+    return MessageResponse(
+        source=source,
+        reply=reply,
+        actions=reply.actions,
+        evidence=reply.evidence,
+    )
 
 
 @router.get("/help/topics", response_model=HelpTopicListResponse)
@@ -195,59 +258,40 @@ async def post_message(
     session: AsyncSession = Depends(get_session),
 ) -> MessageResponse:
     conversation = await get_owned_conversation(session, user, conversation_id)
-    message_count = await session.scalar(
-        select(func.count(ChatMessage.id)).where(
-            ChatMessage.conversation_id == conversation.id
+    return await _answer_message(session, conversation, payload.content)
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def post_chat(
+    payload: ChatRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChatResponse:
+    """Single-shot chat: creates or continues a conversation and answers."""
+    if payload.conversation_id is not None:
+        conversation = await get_owned_conversation(
+            session, user, payload.conversation_id
         )
-    )
-    if (message_count or 0) >= MAX_MESSAGES_PER_CONVERSATION:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Conversation limit of {MAX_MESSAGES_PER_CONVERSATION} messages reached",
+    else:
+        product_id: str | None = None
+        title = "New chat"
+        if payload.product_id is not None:
+            product = await get_owned_product(session, user.id, payload.product_id)
+            product_id = product.id
+            title = f"Chat about {product.name}"
+        conversation = ChatConversation(
+            user_id=user.id,
+            product_id=product_id,
+            title=title,
         )
-    history_rows = list(
-        (
-            await session.scalars(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conversation.id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(HISTORY_WINDOW)
-            )
-        ).all()
-    )
-    history = [
-        {"role": row.role, "content": row.content}
-        for row in reversed(history_rows)
-    ]
-    context = EMPTY_CONTEXT
-    if conversation.product_id:
-        built = await build_context(session, conversation.product_id)
-        if built is not None:
-            context = built
-    provider = get_ai_provider()
-    result, source = await with_fallback(
-        provider, "chat", context, payload.content, history
-    )
-    user_message = ChatMessage(
+        session.add(conversation)
+        await session.commit()
+        await session.refresh(conversation)
+    message = await _answer_message(session, conversation, payload.message)
+    return ChatResponse(
         conversation_id=conversation.id,
-        role="user",
-        content=payload.content,
-    )
-    assistant_message = ChatMessage(
-        conversation_id=conversation.id,
-        role="assistant",
-        content=result.reply[:8000],
-        actions=[action.model_dump() for action in result.actions],
-        evidence=[item.model_dump() for item in result.evidence],
-    )
-    session.add(user_message)
-    session.add(assistant_message)
-    await session.commit()
-    await session.refresh(assistant_message)
-    reply = _message_payload(assistant_message)
-    return MessageResponse(
-        source=source,
-        reply=reply,
-        actions=reply.actions,
-        evidence=reply.evidence,
+        answer=message.reply.content,
+        actions=message.actions,
+        evidence=message.evidence,
+        source=message.source,
     )

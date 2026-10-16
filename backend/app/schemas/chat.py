@@ -54,6 +54,20 @@ class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
 
 
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    conversation_id: str | None = None
+    product_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    conversation_id: str
+    answer: str
+    actions: list[dict] = Field(default_factory=list)
+    evidence: list[dict] = Field(default_factory=list)
+    source: str
+
+
 class MessageResponse(BaseModel):
     source: str
     reply: ChatMessageOut

@@ -53,6 +53,13 @@ class ChatOut(BaseModel):
     evidence: list[ChatEvidence] = Field(default_factory=list)
 
 
+class AlertRuleOut(BaseModel):
+    kind: str
+    threshold: float | None = None
+    rule_text: str = ""
+    rule_json: dict = Field(default_factory=dict)
+
+
 class AIProvider(Protocol):
     name: str
 
@@ -66,8 +73,12 @@ class AIProvider(Protocol):
         self, context: dict, message: str, history: list[dict]
     ) -> ChatOut: ...
 
+    async def parse_alert_rule(self, text: str) -> AlertRuleOut: ...
+
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+_PINCODE_RE = re.compile(r"\b1[1-9]\d{4}\b")
+_RUPEE_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def parse_json_payload(text: str) -> dict:
@@ -90,3 +101,61 @@ def parse_json_payload(text: str) -> dict:
     if not isinstance(payload, dict):
         raise AIProviderError("Model response JSON was not an object")
     return payload
+
+
+def grounding_violations(text: str, context: dict) -> list[str]:
+    """Return violations when text mentions pincodes/prices absent from context.
+
+    The brief requires rejecting model outputs that invent pincodes or prices;
+    callers fall back to the rule-based provider when this list is non-empty.
+    """
+    allowed_pins = {str(pin) for pin in context.get("all_pins", [])}
+    allowed_pins.update(str(pin) for pin in context.get("oos_pins", []))
+    for change in context.get("recent_changes", []):
+        if change.get("pincode"):
+            allowed_pins.add(str(change["pincode"]))
+    allowed_prices = {
+        round(float(context[key]), 2)
+        for key in (
+            "avg_price",
+            "cheapest_rival",
+            "this_week_avg_price",
+            "last_week_avg_price",
+        )
+        if isinstance(context.get(key), (int, float))
+    }
+    for change in context.get("recent_changes", []):
+        for field in ("old_value", "new_value"):
+            value = change.get(field)
+            if isinstance(value, (int, float)):
+                allowed_prices.add(round(float(value), 2))
+    violations: list[str] = []
+    for pin in _PINCODE_RE.findall(text):
+        if allowed_pins and pin not in allowed_pins:
+            violations.append(f"unknown pincode {pin}")
+        elif not allowed_pins:
+            violations.append(f"pincode mentioned {pin} but none were provided")
+    for raw in _RUPEE_PRICE_RE.findall(text):
+        price = round(float(raw), 2)
+        if allowed_prices and not any(
+            abs(price - known) < 0.011 for known in allowed_prices
+        ):
+            violations.append(f"unknown price {price}")
+    return violations
+
+
+def result_text(task: str, result: BaseModel) -> str:
+    """Flatten a provider result to the text the grounding check inspects."""
+    if task == "summarize":
+        return result.summary_text
+    if task == "recommend":
+        return " ".join(
+            f"{item.action_text} {item.impact_text}" for item in result.recommendations
+        )
+    if task == "reviews":
+        return " ".join([*result.loves, *result.complaints])
+    if task == "chat":
+        return result.reply
+    if task == "parse_alert_rule":
+        return result.rule_text
+    return ""

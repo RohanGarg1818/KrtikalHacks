@@ -150,16 +150,16 @@ async def delete_pending_recommendations(
 
 
 @router.post(
-    "/recommendations/{recommendation_id}/accept",
+    "/recommendations/{recommendation_id}/approve",
     response_model=DecisionResponse,
 )
-async def accept_recommendation(
+async def approve_recommendation(
     recommendation_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> DecisionResponse:
     row = await get_owned_recommendation(session, user, recommendation_id)
-    row = await decide_recommendation(session, row, decision="accepted")
+    row = await decide_recommendation(session, row, decision="approved")
     return DecisionResponse(
         id=row.id,
         status=row.status,
@@ -169,21 +169,60 @@ async def accept_recommendation(
 
 
 @router.post(
-    "/recommendations/{recommendation_id}/decline",
+    "/recommendations/{recommendation_id}/dismiss",
     response_model=DecisionResponse,
 )
-async def decline_recommendation(
+async def dismiss_recommendation(
     recommendation_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> DecisionResponse:
     row = await get_owned_recommendation(session, user, recommendation_id)
-    row = await decide_recommendation(session, row, decision="declined")
+    row = await decide_recommendation(session, row, decision="dismissed")
     return DecisionResponse(
         id=row.id,
         status=row.status,
         decided_via=row.decided_via,
         decided_at=row.decided_at,
+    )
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/send-telegram",
+    response_model=DecisionResponse,
+)
+async def send_recommendation_to_telegram(
+    recommendation_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DecisionResponse:
+    from ..models.telegram import TelegramLink
+    from ..services.telegram import send_recommendation_message
+
+    row = await get_owned_recommendation(session, user, recommendation_id)
+    product = await session.get(Product, row.product_id)
+    links = list(
+        (
+            await session.scalars(
+                select(TelegramLink).where(
+                    TelegramLink.product_id == row.product_id,
+                    TelegramLink.user_id == user.id,
+                )
+            )
+        ).all()
+    )
+    sent = 0
+    for link in links:
+        if await send_recommendation_message(
+            link.chat_id, row, product_name=product.name if product else None
+        ):
+            sent += 1
+    return DecisionResponse(
+        id=row.id,
+        status=row.status,
+        decided_via=row.decided_via,
+        decided_at=row.decided_at,
+        sent_to_chats=sent,
     )
 
 

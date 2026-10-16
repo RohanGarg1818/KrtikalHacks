@@ -25,7 +25,14 @@ from .insights import _latest_rival_rows, _latest_seller_rows
 
 logger = logging.getLogger("shelfsense.alerts")
 
-ALERT_KINDS = ("oos_any", "price_change_pct", "rating_below", "price_gap_pct")
+ALERT_KINDS = (
+    "oos_any",
+    "price_change_pct",
+    "rating_below",
+    "price_gap_pct",
+    "rival_oos",
+    "custom",
+)
 DEFAULT_RATING_THRESHOLD = 4.0
 DEFAULT_GAP_THRESHOLD_PCT = 5.0
 ALERT_MESSAGE_LIMIT = 2000
@@ -244,6 +251,37 @@ async def evaluate_alerts(
                         ),
                     }
                 )
+
+        elif kind == "rival_oos":
+            for (competitor_id, platform, pincode), row in rival_latest.items():
+                if row.in_stock is not False:
+                    continue
+                area = areas.get(pincode, pincode)
+                candidates.append(
+                    {
+                        "kind": "rival_oos",
+                        "message": (
+                            f"A competitor is out of stock for {product.name} "
+                            f"in {area} ({pincode}) on {platform} — "
+                            "chance to capture the shelf."
+                        )[:ALERT_MESSAGE_LIMIT],
+                        "evidence": {
+                            "competitor_id": competitor_id,
+                            "platform": platform,
+                            "pincode": pincode,
+                        },
+                        "dedupe_key": (
+                            f"rival_oos:{product.id}:{competitor_id}:"
+                            f"{platform}:{pincode}:"
+                            f"{now.date().isoformat()}"
+                        ),
+                    }
+                )
+        elif kind == "custom":
+            # Custom rules carry structured conditions in rule_json; without
+            # them there is nothing deterministic to evaluate, so they are
+            # stored for the UI but do not fire automatically.
+            continue
 
     if not candidates:
         return []

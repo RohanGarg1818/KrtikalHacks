@@ -8,6 +8,7 @@ are unaffected. Jobs create runs through the same runner used by the API.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -28,7 +29,7 @@ from .plans import FREQUENCY_HOURS, limits_for
 
 logger = logging.getLogger("shelfsense.scheduler")
 
-SCAN_INTERVAL_SECONDS = 300
+SCAN_INTERVAL_SECONDS = 900
 BRIEFING_INTERVAL_SECONDS = 60
 FIRST_SCAN_DELAY_SECONDS = 20
 BRIEFING_HISTORY_LIMIT = 1000
@@ -96,9 +97,7 @@ async def scan_due_products() -> int:
             if interval_hours is None:
                 interval_hours = 24
             plan = await session.scalar(
-                select(Subscription.plan).where(
-                    Subscription.user_id == product.user_id
-                )
+                select(Subscription.plan).where(Subscription.user_id == product.user_id)
             )
             minimum = limits_for(plan or "free").minimum_frequency_hours
             if minimum is not None and interval_hours < minimum:
@@ -158,9 +157,13 @@ async def scan_due_products() -> int:
                     exc.detail,
                 )
                 continue
-            schedule_run(
+            scheduled = schedule_run(
                 run.id, product_id=product.id, user_id=product.user_id, jobs=jobs
             )
+            # The production runner returns a Task. Await a coroutine only so
+            # dependency-injected/testing scheduling hooks are also supported.
+            if inspect.iscoroutine(scheduled):
+                await scheduled
             started += 1
             logger.info(
                 "scheduled run started product=%s run=%s jobs=%s",

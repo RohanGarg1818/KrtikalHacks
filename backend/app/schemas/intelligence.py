@@ -39,6 +39,7 @@ class DecisionResponse(BaseModel):
     status: str
     decided_via: str | None = None
     decided_at: datetime | None = None
+    sent_to_chats: int = 0
 
 
 class GenerateResponse(BaseModel):

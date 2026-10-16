@@ -16,10 +16,13 @@ from ..models.user import User
 from ..schemas.notifications import (
     AlertListResponse,
     AlertResponse,
+    LinkCodeRequest,
     LinkCodeResponse,
     MarkReadResponse,
     TelegramChatLink,
+    TelegramLinkUpdate,
     TelegramStatusResponse,
+    TelegramTestResponse,
 )
 from ..schemas.products import AlertRuleInput
 from ..services.alerts import effective_rules
@@ -27,6 +30,8 @@ from ..services.telegram import (
     bot_is_running,
     build_deeplink,
     create_link_code,
+    send_telegram_message,
+    unlink_chat,
 )
 from .products import get_owned_product
 
@@ -150,20 +155,18 @@ async def get_alert_rules(
 )
 async def post_link_code(
     product_id: str,
+    payload: LinkCodeRequest | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-    settings: Settings = Depends(get_settings),
 ) -> LinkCodeResponse:
-    if not settings.telegram_enabled:
-        raise HTTPException(
-            status_code=503,
-            detail="Telegram is not configured; set TELEGRAM_BOT_TOKEN to enable linking",
-        )
     await get_owned_product(session, user.id, product_id)
-    code = await create_link_code(session, user_id=user.id, product_id=product_id)
+    chat_type = payload.chat_type if payload else "personal"
+    code = await create_link_code(
+        session, user_id=user.id, product_id=product_id, chat_type=chat_type
+    )
     return LinkCodeResponse(
         code=code.code,
-        deeplink=build_deeplink(code.code),
+        deep_link=build_deeplink(code.code, chat_type=chat_type),
         expires_at=code.expires_at,
         product_id=product_id,
     )
@@ -190,7 +193,28 @@ async def telegram_status(
             )
         ).all()
     )
+    if rows:
+        status = "connected"
+        chat_title = rows[0].chat_title
+    else:
+        from ..models.base import utcnow
+        from ..models.telegram import TelegramLinkCode
+
+        waiting = await session.scalar(
+            select(TelegramLinkCode.code)
+            .where(
+                TelegramLinkCode.product_id == product_id,
+                TelegramLinkCode.user_id == user.id,
+                TelegramLinkCode.used_at.is_(None),
+                TelegramLinkCode.expires_at >= utcnow(),
+            )
+            .limit(1)
+        )
+        status = "waiting" if waiting else "not_connected"
+        chat_title = None
     return TelegramStatusResponse(
+        status=status,
+        chat_title=chat_title,
         enabled=settings.telegram_enabled,
         bot_running=bot_is_running(),
         bot_username=settings.telegram_bot_username or None,
@@ -206,3 +230,97 @@ async def telegram_status(
             for row in rows
         ],
     )
+
+
+@router.patch(
+    "/products/{product_id}/telegram",
+    response_model=TelegramStatusResponse,
+)
+async def update_telegram_link(
+    product_id: str,
+    payload: TelegramLinkUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> TelegramStatusResponse:
+    await get_owned_product(session, user.id, product_id)
+    rows = list(
+        (
+            await session.scalars(
+                select(TelegramLink).where(
+                    TelegramLink.product_id == product_id,
+                    TelegramLink.user_id == user.id,
+                )
+            )
+        ).all()
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=404, detail="Telegram is not connected for this product"
+        )
+    for row in rows:
+        if payload.alert_types is not None:
+            row.alert_types = payload.alert_types
+        if payload.briefing_time is not None:
+            row.briefing_time = payload.briefing_time
+    await session.commit()
+    return await telegram_status(product_id, user=user, session=session, settings=settings)
+
+
+@router.post(
+    "/products/{product_id}/telegram/test",
+    response_model=TelegramTestResponse,
+)
+async def send_test_telegram(
+    product_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TelegramTestResponse:
+    product = await get_owned_product(session, user.id, product_id)
+    rows = list(
+        (
+            await session.scalars(
+                select(TelegramLink).where(
+                    TelegramLink.product_id == product_id,
+                    TelegramLink.user_id == user.id,
+                )
+            )
+        ).all()
+    )
+    if not rows:
+        raise HTTPException(
+            status_code=404, detail="Telegram is not connected for this product"
+        )
+    text = f"[ShelfSense] Test message for {product.name}. Alerts are wired up."
+    sent_any = False
+    chat_id: str | None = None
+    for row in rows:
+        if await send_telegram_message(row.chat_id, text):
+            sent_any = True
+            chat_id = row.chat_id
+    return TelegramTestResponse(
+        sent=sent_any,
+        chat_id=chat_id,
+        message=text if sent_any else "Bot is not running; message logged only.",
+    )
+
+
+@router.delete("/products/{product_id}/telegram", status_code=204)
+async def disconnect_telegram(
+    product_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    await get_owned_product(session, user.id, product_id)
+    rows = list(
+        (
+            await session.scalars(
+                select(TelegramLink).where(
+                    TelegramLink.product_id == product_id,
+                    TelegramLink.user_id == user.id,
+                )
+            )
+        ).all()
+    )
+    for row in rows:
+        await unlink_chat(session, chat_id=row.chat_id)

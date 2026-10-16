@@ -6,7 +6,10 @@ the measured context numbers, so the app stays useful with zero API keys.
 
 from __future__ import annotations
 
+import re
+
 from .base import (
+    AlertRuleOut,
     ChatAction,
     ChatEvidence,
     ChatOut,
@@ -15,6 +18,9 @@ from .base import (
     ReviewsOut,
     SummaryOut,
 )
+
+_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_BELOW_RE = re.compile(r"below\s+(\d+(?:\.\d+)?)")
 
 
 def _fmt_money(value: float | None) -> str:
@@ -266,3 +272,40 @@ class FallbackAIProvider:
             )
             evidence.append(ChatEvidence(metric="avg_price", value=context.get("avg_price")))
         return ChatOut(reply=" ".join(parts), actions=actions, evidence=evidence)
+
+    async def parse_alert_rule(self, text: str) -> AlertRuleOut:
+        lowered = text.lower()
+        if any(word in lowered for word in ("out of stock", "stockout", "oos")):
+            if "rival" in lowered or "competitor" in lowered:
+                return AlertRuleOut(
+                    kind="rival_oos",
+                    rule_text=text,
+                    rule_json={"trigger": "competitor out of stock"},
+                )
+            return AlertRuleOut(
+                kind="oos_any", rule_text=text, rule_json={"trigger": "seller oos"}
+            )
+        if "rating" in lowered:
+            match = _BELOW_RE.search(lowered) or _PERCENT_RE.search(lowered)
+            threshold = float(match.group(1)) if match else 4.0
+            return AlertRuleOut(
+                kind="rating_below",
+                threshold=threshold,
+                rule_text=text,
+                rule_json={"trigger": "rating below"},
+            )
+        if "price" in lowered:
+            match = _PERCENT_RE.search(lowered)
+            threshold = float(match.group(1)) if match else None
+            direction = "drop" if any(
+                word in lowered for word in ("drop", "down", "fall", "decrease")
+            ) else "change"
+            return AlertRuleOut(
+                kind="price_change_pct",
+                threshold=threshold,
+                rule_text=text,
+                rule_json={"trigger": f"price {direction}"},
+            )
+        return AlertRuleOut(
+            kind="custom", rule_text=text, rule_json={"trigger": "custom"}
+        )

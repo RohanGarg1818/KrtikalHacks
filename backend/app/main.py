@@ -1,10 +1,13 @@
 """ShelfSense FastAPI application factory."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -73,11 +76,64 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request_id=%s method=%s path=%s status=%s ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            round((time.perf_counter() - started) * 1000),
+        )
+        return response
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        message = exc.detail if isinstance(exc.detail, str) else "Request failed"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {"code": f"http_{exc.status_code}", "message": message},
+                # Kept during the hackathon build for clients using FastAPI's usual error field.
+                "detail": exc.detail,
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "Request validation failed",
+                },
+                "detail": exc.errors(),
+            },
+        )
+
     @app.exception_handler(Exception)
-    async def unhandled_error(_: Request, exc: Exception) -> JSONResponse:
+    async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception(
+            "request_id=%s unhandled error",
+            getattr(request.state, "request_id", "unknown"),
+        )
         return JSONResponse(
             status_code=500,
-            content={"error": {"code": "internal_error", "message": str(exc)}},
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "Unexpected server error",
+                }
+            },
         )
 
     media_dir = Path("media")

@@ -351,7 +351,8 @@ async def test_link_code_flow_and_expiry() -> None:
     product_id = await make_product(user.id)
     async with SessionLocal() as session:
         code = await create_link_code(session, user_id=user.id, product_id=product_id)
-        assert len(code.code) == 8
+        assert code.code.startswith("SS-")
+        assert len(code.code.split("-")) == 3
         assert code.expires_at > utcnow()
         assert code.code in build_deeplink(code.code)
 
@@ -366,7 +367,7 @@ async def test_link_code_flow_and_expiry() -> None:
         reuse = await redeem_link_code(session, code_value=code.code, chat_id="43")
         assert reuse is None
 
-        expired_code = f"exp{uuid4().hex[:5]}"
+        expired_code = f"SS-9999-EXP{uuid4().hex[:4].upper()}"
         expired = TelegramLinkCode(
             code=expired_code,
             user_id=user.id,
@@ -381,22 +382,39 @@ async def test_link_code_flow_and_expiry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_telegram_endpoints_disabled_without_token() -> None:
+async def test_telegram_endpoints_without_token() -> None:
     user = await make_user()
     product_id = await make_product(user.id)
     app = app_for(user)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        # Link codes still work without a token; delivery just logs.
         code = await client.post(f"/api/products/{product_id}/telegram/link-code")
-        assert code.status_code == 503
+        assert code.status_code == 200
+        body = code.json()
+        assert body["code"].startswith("SS-")
+        assert "deep_link" in body
 
         status = await client.get(f"/api/products/{product_id}/telegram/status")
         assert status.status_code == 200
-        body = status.json()
-        assert body["enabled"] is False
-        assert body["bot_running"] is False
-        assert body["links"] == []
+        status_body = status.json()
+        assert status_body["status"] == "waiting"
+        assert status_body["enabled"] is False
+        assert status_body["bot_running"] is False
+        assert status_body["links"] == []
+
+        patched = await client.patch(
+            f"/api/products/{product_id}/telegram",
+            json={"alert_types": ["oos_any"], "briefing_time": "09:00"},
+        )
+        assert patched.status_code == 404
+
+        test = await client.post(f"/api/products/{product_id}/telegram/test")
+        assert test.status_code == 404
+
+        deleted = await client.delete(f"/api/products/{product_id}/telegram")
+        assert deleted.status_code == 204
 
 
 @pytest.mark.asyncio
@@ -413,8 +431,17 @@ async def test_telegram_link_code_with_token(monkeypatch: pytest.MonkeyPatch) ->
         response = await client.post(f"/api/products/{product_id}/telegram/link-code")
         assert response.status_code == 200
         body = response.json()
-        assert len(body["code"]) == 8
-        assert body["deeplink"].startswith("https://t.me/shelfsense_bot?start=")
+        assert body["code"].startswith("SS-")
+        assert body["deep_link"].startswith("https://t.me/shelfsense_bot?start=")
+
+        group = await client.post(
+            f"/api/products/{product_id}/telegram/link-code",
+            json={"chat_type": "group"},
+        )
+        assert group.status_code == 200
+        assert group.json()["deep_link"].startswith(
+            "https://t.me/shelfsense_bot?startgroup="
+        )
 
 
 @pytest.mark.asyncio
