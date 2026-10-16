@@ -1,0 +1,398 @@
+"""Pin-level heatmap: status classification, snapshots, and hot zones.
+
+Status rules (applied per platform cell, worst cell wins for a pin row):
+  stale         latest seller result failed, missing, or older than 24h
+  out_of_stock  seller in_stock is False
+  price_gap     in stock AND seller price >= 1.05 * cheapest in-stock rival
+  in_stock      otherwise
+Hot zone: >= 3 out_of_stock pincodes within 3 km (haversine) -> cluster centre.
+Snapshots (6h/24h/7d) use the latest result at or before (now - offset).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TypeVar
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.checks import CheckResult
+from ..models.product import Competitor, Pincode, ProductPincode
+from ..utils.geo import haversine_km
+
+SNAPSHOT_OFFSETS: dict[str, timedelta] = {
+    "now": timedelta(0),
+    "6h": timedelta(hours=6),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+}
+STALE_AFTER = timedelta(hours=24)
+PRICE_GAP_RATIO = 1.05
+HOT_ZONE_RADIUS_KM = 3.0
+HOT_ZONE_MIN_PINS = 3
+STATUS_RANK = {"out_of_stock": 0, "price_gap": 1, "stale": 2, "in_stock": 3}
+
+
+@dataclass(frozen=True)
+class PinPoint:
+    pincode: str
+    lat: float
+    lng: float
+    status: str
+
+
+def snapshot_cutoff(snapshot: str, now: datetime | None = None) -> datetime:
+    if snapshot not in SNAPSHOT_OFFSETS:
+        raise ValueError(f"Unknown snapshot: {snapshot}")
+    base = now if now is not None else datetime.now(UTC)
+    return base - SNAPSHOT_OFFSETS[snapshot]
+
+
+def classify_pin_status(
+    seller_status: str | None,
+    seller_in_stock: bool | None,
+    seller_price: float | None,
+    seller_checked_at: datetime | None,
+    rival_price: float | None,
+    cutoff: datetime,
+) -> str:
+    if seller_status is None or seller_checked_at is None:
+        return "stale"
+    if seller_status != "ok" or seller_checked_at < cutoff - STALE_AFTER:
+        return "stale"
+    if seller_in_stock is False:
+        return "out_of_stock"
+    if (
+        seller_price is not None
+        and rival_price is not None
+        and seller_price >= PRICE_GAP_RATIO * rival_price
+    ):
+        return "price_gap"
+    return "in_stock"
+
+
+def find_hot_zones(pins: Sequence[PinPoint]) -> list[dict]:
+    candidates = sorted(
+        (pin for pin in pins if pin.status == "out_of_stock"),
+        key=lambda pin: pin.pincode,
+    )
+    claimed: set[str] = set()
+    zones: list[dict] = []
+    for pin in candidates:
+        if pin.pincode in claimed:
+            continue
+        members = [
+            other
+            for other in candidates
+            if other.pincode not in claimed
+            and haversine_km(pin.lat, pin.lng, other.lat, other.lng)
+            <= HOT_ZONE_RADIUS_KM
+        ]
+        if len(members) < HOT_ZONE_MIN_PINS:
+            continue
+        claimed.update(member.pincode for member in members)
+        zones.append(
+            {
+                "lat": round(sum(m.lat for m in members) / len(members), 6),
+                "lng": round(sum(m.lng for m in members) / len(members), 6),
+                "count": len(members),
+                "pincodes": sorted(member.pincode for member in members),
+            }
+        )
+    return zones
+
+
+RowT = TypeVar("RowT")
+
+
+def take_latest(rows: list[RowT], key_fn: Callable[[RowT], tuple]) -> dict[tuple, RowT]:
+    """First row per key wins; callers must order rows by checked_at desc."""
+    latest: dict[tuple, RowT] = {}
+    for row in rows:
+        key = key_fn(row)
+        if key not in latest:
+            latest[key] = row
+    return latest
+
+
+async def selected_pairs(
+    session: AsyncSession, product_id: str, platform: str | None = None
+) -> dict[str, set[str]]:
+    """Map pincode -> set of selected platforms for a product."""
+    statement = select(ProductPincode).where(ProductPincode.product_id == product_id)
+    if platform is not None:
+        statement = statement.where(ProductPincode.platform == platform)
+    pairs: dict[str, set[str]] = {}
+    for row in (await session.scalars(statement)).all():
+        pairs.setdefault(row.pincode, set()).add(row.platform)
+    return pairs
+
+
+def mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+async def _seller_rows(
+    session: AsyncSession,
+    product_id: str,
+    pincodes: list[str],
+    platforms: list[str],
+    cutoff: datetime,
+) -> list[CheckResult]:
+    return list(
+        (
+            await session.scalars(
+                select(CheckResult)
+                .where(
+                    CheckResult.product_id == product_id,
+                    CheckResult.competitor_id.is_(None),
+                    CheckResult.pincode.in_(pincodes),
+                    CheckResult.platform.in_(platforms),
+                    CheckResult.checked_at <= cutoff,
+                )
+                .order_by(CheckResult.checked_at.desc())
+            )
+        ).all()
+    )
+
+
+async def _rival_rows(
+    session: AsyncSession,
+    product_id: str,
+    pincodes: list[str],
+    platforms: list[str],
+    cutoff: datetime,
+) -> list[CheckResult]:
+    return list(
+        (
+            await session.scalars(
+                select(CheckResult)
+                .where(
+                    CheckResult.product_id == product_id,
+                    CheckResult.competitor_id.is_not(None),
+                    CheckResult.pincode.in_(pincodes),
+                    CheckResult.platform.in_(platforms),
+                    CheckResult.checked_at <= cutoff,
+                )
+                .order_by(CheckResult.checked_at.desc())
+            )
+        ).all()
+    )
+
+
+async def compute_heatmap(
+    session: AsyncSession,
+    product_id: str,
+    *,
+    platform: str | None = None,
+    snapshot: str = "now",
+    now: datetime | None = None,
+) -> dict:
+    cutoff = snapshot_cutoff(snapshot, now)
+    pairs = await selected_pairs(session, product_id, platform)
+    pincodes = sorted(pairs)
+    empty = {
+        "pins": [],
+        "summary": {
+            "in_stock": 0,
+            "out_of_stock": 0,
+            "price_gap": 0,
+            "stale": 0,
+            "total": 0,
+        },
+        "hot_zones": [],
+        "platform": platform,
+        "snapshot": snapshot,
+    }
+    if not pincodes:
+        return empty
+    platforms = sorted({item for items in pairs.values() for item in items})
+
+    seller_latest = take_latest(
+        await _seller_rows(session, product_id, pincodes, platforms, cutoff),
+        lambda row: (row.platform, row.pincode),
+    )
+    rival_latest = take_latest(
+        await _rival_rows(session, product_id, pincodes, platforms, cutoff),
+        lambda row: (row.competitor_id, row.platform, row.pincode),
+    )
+    cheapest_rival: dict[tuple[str, str], float] = {}
+    for (competitor_id, cell_platform, pincode), row in rival_latest.items():
+        if row.status != "ok" or row.in_stock is not True or row.price is None:
+            continue
+        key = (cell_platform, pincode)
+        current = cheapest_rival.get(key)
+        if current is None or row.price < current:
+            cheapest_rival[key] = row.price
+
+    geo = {
+        row.code: row
+        for row in (
+            await session.scalars(select(Pincode).where(Pincode.code.in_(pincodes)))
+        ).all()
+    }
+
+    pins: list[dict] = []
+    for pincode in pincodes:
+        cells: list[tuple[str, dict]] = []
+        for cell_platform in sorted(pairs[pincode]):
+            seller = seller_latest.get((cell_platform, pincode))
+            rival_price = cheapest_rival.get((cell_platform, pincode))
+            status = classify_pin_status(
+                seller_status=seller.status if seller else None,
+                seller_in_stock=seller.in_stock if seller else None,
+                seller_price=seller.price if seller else None,
+                seller_checked_at=seller.checked_at if seller else None,
+                rival_price=rival_price,
+                cutoff=cutoff,
+            )
+            cells.append(
+                (
+                    cell_platform,
+                    {
+                        "status": status,
+                        "price": seller.price if seller and seller.status == "ok" else None,
+                        "mrp": seller.mrp if seller and seller.status == "ok" else None,
+                        "eta": seller.eta_minutes if seller and seller.status == "ok" else None,
+                        "rival_price": rival_price,
+                        "checked_at": seller.checked_at if seller else None,
+                    },
+                )
+            )
+        cells.sort(key=lambda item: (STATUS_RANK[item[1]["status"]], item[0]))
+        chosen_platform, chosen = cells[0]
+        pin = geo.get(pincode)
+        pins.append(
+            {
+                "pincode": pincode,
+                "area": pin.area_name if pin else None,
+                "lat": pin.lat if pin else None,
+                "lng": pin.lng if pin else None,
+                "status": chosen["status"],
+                "price": chosen["price"],
+                "rival_price": chosen["rival_price"],
+                "mrp": chosen["mrp"],
+                "eta": chosen["eta"],
+                "checked_at": chosen["checked_at"],
+                "platform": chosen_platform,
+            }
+        )
+
+    summary = {"in_stock": 0, "out_of_stock": 0, "price_gap": 0, "stale": 0, "total": 0}
+    for pin in pins:
+        summary[pin["status"]] += 1
+        summary["total"] += 1
+    hot_zone_points = [
+        PinPoint(pin["pincode"], pin["lat"], pin["lng"], pin["status"])
+        for pin in pins
+        if pin["lat"] is not None and pin["lng"] is not None
+    ]
+    return {
+        "pins": pins,
+        "summary": summary,
+        "hot_zones": find_hot_zones(hot_zone_points),
+        "platform": platform,
+        "snapshot": snapshot,
+    }
+
+
+async def compute_pin_detail(
+    session: AsyncSession,
+    product_id: str,
+    code: str,
+    *,
+    platform: str | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    cutoff = now if now is not None else datetime.now(UTC)
+    pin = await session.get(Pincode, code)
+    if pin is None:
+        return None
+    pairs = await selected_pairs(session, product_id, platform)
+    if code not in pairs:
+        return None
+    platforms = sorted(pairs[code])
+
+    seller_latest = take_latest(
+        await _seller_rows(session, product_id, [code], platforms, cutoff),
+        lambda row: (row.platform, row.pincode),
+    )
+    rival_latest = take_latest(
+        await _rival_rows(session, product_id, [code], platforms, cutoff),
+        lambda row: (row.competitor_id, row.platform, row.pincode),
+    )
+    names = {
+        row.id: row.name
+        for row in (
+            await session.scalars(
+                select(Competitor).where(Competitor.product_id == product_id)
+            )
+        ).all()
+    }
+    cheapest: dict[str, float] = {}
+    rivals_by_platform: dict[str, list[dict]] = {item: [] for item in platforms}
+    for (competitor_id, cell_platform, _), row in rival_latest.items():
+        rivals_by_platform.setdefault(cell_platform, []).append(
+            {
+                "competitor_id": competitor_id,
+                "name": names.get(competitor_id, "Competitor"),
+                "in_stock": row.in_stock,
+                "price": row.price,
+                "mrp": row.mrp,
+                "eta": row.eta_minutes,
+                "rating": row.rating,
+                "status": row.status,
+                "checked_at": row.checked_at,
+            }
+        )
+        if row.status == "ok" and row.in_stock is True and row.price is not None:
+            current = cheapest.get(cell_platform)
+            if current is None or row.price < current:
+                cheapest[cell_platform] = row.price
+
+    platform_rows: list[dict] = []
+    for cell_platform in platforms:
+        seller = seller_latest.get((cell_platform, code))
+        status = classify_pin_status(
+            seller_status=seller.status if seller else None,
+            seller_in_stock=seller.in_stock if seller else None,
+            seller_price=seller.price if seller else None,
+            seller_checked_at=seller.checked_at if seller else None,
+            rival_price=cheapest.get(cell_platform),
+            cutoff=cutoff,
+        )
+        rivals = sorted(
+            rivals_by_platform.get(cell_platform, []),
+            key=lambda item: (item["price"] is None, item["price"] or 0),
+        )
+        platform_rows.append(
+            {
+                "platform": cell_platform,
+                "status": status,
+                "seller": {
+                    "in_stock": seller.in_stock if seller else None,
+                    "price": seller.price if seller else None,
+                    "mrp": seller.mrp if seller else None,
+                    "eta": seller.eta_minutes if seller else None,
+                    "rating": seller.rating if seller else None,
+                    "status": seller.status if seller else "missing",
+                    "checked_at": seller.checked_at if seller else None,
+                    "run_id": seller.run_id if seller else None,
+                    "screenshot_url": seller.screenshot_url if seller else None,
+                },
+                "rivals": rivals,
+            }
+        )
+    return {
+        "pincode": code,
+        "area": pin.area_name,
+        "city": pin.city,
+        "lat": pin.lat,
+        "lng": pin.lng,
+        "platforms": platform_rows,
+    }

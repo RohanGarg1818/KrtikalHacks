@@ -27,6 +27,8 @@ from ..models.checks import CheckResult as CheckResultRow
 from ..models.checks import CheckRun, CreditLedger
 from ..models.product import Competitor, Product, ProductListing
 from .events import run_events
+from .insights import detect_changes
+from .intelligence import refresh_intelligence
 from .storage import save_screenshot
 from .tinyfish import TinyFishClient, TinyFishError, get_tinyfish_client
 from .tinyfish.base import CheckResult as CheckResultPayload
@@ -329,6 +331,14 @@ async def execute_run(
             run.credits_used = counters["credits"]
             run.finished_at = utcnow()
             await session.commit()
+            try:
+                await detect_changes(session, run_id=run_id, product_id=product_id)
+            except Exception:
+                logger.exception("change detection failed for run %s", run_id)
+            try:
+                await refresh_intelligence(session, product_id, run_id=run_id)
+            except Exception:
+                logger.exception("intelligence refresh failed for run %s", run_id)
             close = getattr(client, "close", None)
             if close is not None:
                 with contextlib.suppress(Exception):

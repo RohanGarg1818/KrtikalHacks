@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDPrimaryKeyMixin, utcnow
+from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 
 class ChatConversation(UUIDPrimaryKeyMixin, Base):
@@ -16,7 +16,7 @@ class ChatConversation(UUIDPrimaryKeyMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
 
 
@@ -30,5 +30,5 @@ class ChatMessage(UUIDPrimaryKeyMixin, Base):
     actions: Mapped[list] = mapped_column(JSON, default=list)
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )

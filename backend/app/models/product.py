@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDPrimaryKeyMixin, utcnow
+from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 
 class Product(UUIDPrimaryKeyMixin, Base):
@@ -24,7 +24,7 @@ class Product(UUIDPrimaryKeyMixin, Base):
     approval_required: Mapped[bool] = mapped_column(Boolean, default=True)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
 
 

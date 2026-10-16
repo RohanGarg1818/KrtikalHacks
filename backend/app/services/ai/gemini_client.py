@@ -1,0 +1,95 @@
+"""Gemini provider using the official google-genai SDK.
+
+All SDK and wire-format details stay inside this module. Any failure
+(misconfiguration, transport error, malformed JSON) raises AIProviderError so
+the caller can transparently switch to the rule-based fallback.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from google import genai
+from google.genai import types
+
+from .base import (
+    AIProviderError,
+    ChatOut,
+    RecommendOut,
+    ReviewsOut,
+    SummaryOut,
+    parse_json_payload,
+)
+from .prompts import chat_prompt, recommend_prompt, reviews_prompt, summarize_prompt
+
+logger = logging.getLogger("shelfsense.ai.gemini")
+
+DEFAULT_MODEL = "gemini-2.5-flash"
+GENERATION_TIMEOUT_SECONDS = 30.0
+
+
+class GeminiAIProvider:
+    name = "gemini"
+
+    def __init__(self, api_key: str, model: str = "") -> None:
+        if not api_key:
+            raise AIProviderError("Gemini API key is missing")
+        self._client = genai.Client(api_key=api_key)
+        self._model = model or DEFAULT_MODEL
+
+    async def _generate(self, system: str, user: str) -> dict:
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=user,
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                    max_output_tokens=1024,
+                ),
+            )
+        except Exception as exc:  # SDK raises many transport error types
+            raise AIProviderError(f"Gemini request failed: {exc}") from exc
+        text = (response.text or "").strip()
+        if not text:
+            raise AIProviderError("Gemini returned an empty response")
+        return parse_json_payload(text)
+
+    async def summarize(self, context: dict) -> SummaryOut:
+        system, user = summarize_prompt(context)
+        try:
+            return SummaryOut.model_validate(await self._generate(system, user))
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Bad summary payload: {exc}") from exc
+
+    async def recommend(self, context: dict) -> RecommendOut:
+        system, user = recommend_prompt(context)
+        try:
+            return RecommendOut.model_validate(await self._generate(system, user))
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Bad recommendation payload: {exc}") from exc
+
+    async def reviews(self, context: dict) -> ReviewsOut:
+        system, user = reviews_prompt(context)
+        try:
+            return ReviewsOut.model_validate(await self._generate(system, user))
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Bad reviews payload: {exc}") from exc
+
+    async def chat(
+        self, context: dict, message: str, history: list[dict]
+    ) -> ChatOut:
+        system, user = chat_prompt(context, message, history)
+        try:
+            return ChatOut.model_validate(await self._generate(system, user))
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Bad chat payload: {exc}") from exc

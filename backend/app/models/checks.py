@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDPrimaryKeyMixin, utcnow
+from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 
 class CheckRun(UUIDPrimaryKeyMixin, Base):
@@ -18,10 +18,10 @@ class CheckRun(UUIDPrimaryKeyMixin, Base):
     failed_jobs: Mapped[int] = mapped_column(Integer, default=0)
     credits_used: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
     finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
 
 
@@ -44,7 +44,7 @@ class CheckResult(UUIDPrimaryKeyMixin, Base):
     error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     checked_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
+        UTCDateTime(), default=utcnow, index=True
     )
 
 
@@ -60,7 +60,7 @@ class ChangeEvent(UUIDPrimaryKeyMixin, Base):
     old_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     new_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     detected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
 
 
@@ -73,5 +73,5 @@ class CreditLedger(UUIDPrimaryKeyMixin, Base):
     credits: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )

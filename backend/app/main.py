@@ -8,8 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api.chat import router as chat_router
 from .api.competitors import router as competitors_router
+from .api.dashboard import router as dashboard_router
 from .api.health import router as health_router
+from .api.heatmap import router as heatmap_router
+from .api.insights import router as insights_router
+from .api.intelligence import router as intelligence_router
 from .api.me import router as me_router
 from .api.products import router as products_router
 from .api.runs import router as runs_router
@@ -50,9 +55,14 @@ def create_app() -> FastAPI:
     app.mount("/media", StaticFiles(directory=media_dir), name="media")
     app.include_router(health_router, prefix="/api")
     app.include_router(me_router, prefix="/api")
+    app.include_router(dashboard_router, prefix="/api")
     app.include_router(products_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")
     app.include_router(competitors_router, prefix="/api")
+    app.include_router(heatmap_router, prefix="/api")
+    app.include_router(insights_router, prefix="/api")
+    app.include_router(intelligence_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
     return app
 

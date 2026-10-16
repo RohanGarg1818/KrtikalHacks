@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String
+from sqlalchemy import JSON, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDPrimaryKeyMixin, utcnow
+from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 
 class AISummary(UUIDPrimaryKeyMixin, Base):
@@ -18,7 +18,7 @@ class AISummary(UUIDPrimaryKeyMixin, Base):
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
 
 
@@ -32,10 +32,10 @@ class Recommendation(UUIDPrimaryKeyMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     decided_via: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
     decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime(), nullable=True
     )
 
 
@@ -48,7 +48,7 @@ class ReviewInsight(UUIDPrimaryKeyMixin, Base):
     loves: Mapped[list] = mapped_column(JSON, default=list)
     complaints: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
 
 
@@ -72,6 +72,6 @@ class Alert(UUIDPrimaryKeyMixin, Base):
     dedupe_key: Mapped[str] = mapped_column(String(500), unique=True)
     sent_telegram: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
+        UTCDateTime(), default=utcnow
     )
     read: Mapped[bool] = mapped_column(default=False)
