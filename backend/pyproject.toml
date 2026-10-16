@@ -1,0 +1,4 @@
+[tool.ruff.lint]
+# FastAPI's Depends declarations are intentionally expressed as defaults.
+ignore = ["B008"]
+
