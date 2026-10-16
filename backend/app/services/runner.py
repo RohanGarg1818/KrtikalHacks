@@ -26,6 +26,7 @@ from ..models.base import utcnow
 from ..models.checks import CheckResult as CheckResultRow
 from ..models.checks import CheckRun, CreditLedger
 from ..models.product import Competitor, Product, ProductListing
+from .alerts import deliver_alerts, evaluate_alerts
 from .events import run_events
 from .insights import detect_changes
 from .intelligence import refresh_intelligence
@@ -38,6 +39,12 @@ logger = logging.getLogger("shelfsense.runner")
 RETRY_BACKOFF_SECONDS = 0.25
 RETRYABLE_ERRORS = (TinyFishError, ValidationError, TimeoutError)
 _active_tasks: set[asyncio.Task] = set()
+_active_run_ids: set[str] = set()
+
+
+def active_run_ids() -> set[str]:
+    """Run IDs currently being executed by a live task in this process."""
+    return {run_id for run_id in _active_run_ids}
 
 
 @dataclass(frozen=True)
@@ -158,7 +165,13 @@ def schedule_run(
         execute_run(run_id, product_id=product_id, user_id=user_id, jobs=jobs)
     )
     _active_tasks.add(task)
-    task.add_done_callback(_active_tasks.discard)
+    _active_run_ids.add(run_id)
+
+    def _cleanup(done: asyncio.Task) -> None:
+        _active_tasks.discard(done)
+        _active_run_ids.discard(run_id)
+
+    task.add_done_callback(_cleanup)
     return task
 
 
@@ -339,6 +352,14 @@ async def execute_run(
                 await refresh_intelligence(session, product_id, run_id=run_id)
             except Exception:
                 logger.exception("intelligence refresh failed for run %s", run_id)
+            try:
+                product = await session.get(Product, product_id)
+                if product is not None:
+                    alerts = await evaluate_alerts(session, product, run_id=run_id)
+                    if alerts:
+                        await deliver_alerts(session, alerts)
+            except Exception:
+                logger.exception("alert evaluation failed for run %s", run_id)
             close = getattr(client, "close", None)
             if close is not None:
                 with contextlib.suppress(Exception):
