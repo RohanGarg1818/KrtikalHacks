@@ -9,7 +9,7 @@ from ..deps import get_current_user
 from ..models.checks import CheckResult
 from ..models.product import Product, ProductPincode
 from ..models.user import Subscription, User
-from ..schemas.me import MeResponse, ProfileResponse, UsageResponse
+from ..schemas.me import MeResponse, ProfileResponse, ProfileUpdate, UsageResponse
 
 router = APIRouter(tags=["account"])
 
@@ -46,3 +46,16 @@ async def get_me(
             products=products or 0, pincodes=pincodes or 0, checks_this_week=checks or 0
         ),
     )
+
+
+@router.patch("/me", response_model=ProfileResponse)
+async def update_me(
+    payload: ProfileUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ProfileResponse:
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(user, field, value)
+    await session.commit()
+    await session.refresh(user)
+    return ProfileResponse.model_validate(user)

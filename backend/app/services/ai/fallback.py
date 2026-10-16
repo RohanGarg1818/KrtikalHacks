@@ -190,7 +190,8 @@ class FallbackAIProvider:
             "price", "stock", "oos", "out of", "availability", "heatmap",
             "pin", "pincode", "run", "check", "weekly", "competitor", "rival",
             "summary", "recommend", "product", "credit", "rating", "eta",
-            "delivery", "shelf", "dashboard",
+            "delivery", "shelf", "dashboard", "first", "today", "priority",
+            "left", "remaining", "plan",
         )
         if not any(keyword in text for keyword in domain_keywords):
             return ChatOut(
@@ -218,7 +219,7 @@ class FallbackAIProvider:
             evidence.append(ChatEvidence(metric="cheapest_rival", value=rival))
         if any(k in text for k in ("stock", "oos", "out of", "availability")):
             parts.append(
-                f"{context.get('in_stock', 0)} of {context.get('total_pins', 0)} "
+                f"{name}: {context.get('in_stock', 0)} of {context.get('total_pins', 0)} "
                 "checked pins are in stock."
             )
             oos_pins = context.get("oos_pins", [])
@@ -236,7 +237,7 @@ class FallbackAIProvider:
             )
             if product_id:
                 actions.append(
-                    ChatAction(label="Open heatmap", path=f"/products/{product_id}/heatmap")
+                    ChatAction(label="Open heatmap", path=f"/heatmap?product={product_id}")
                 )
         if any(k in text for k in ("weekly", "week", "trend", "compare")):
             this_price = context.get("this_week_avg_price")
@@ -248,17 +249,27 @@ class FallbackAIProvider:
             evidence.append(
                 ChatEvidence(metric="this_week_avg_price", value=this_price)
             )
-        if any(k in text for k in ("recommend", "should", "advice", "next")):
+        if any(k in text for k in ("recommend", "should", "advice", "next", "first", "priority")):
             top = (context.get("recommendation_preview") or "").strip()
             parts.append(top or "Run a fresh check to generate recommendations.")
             if product_id:
                 actions.append(
                     ChatAction(
                         label="View recommendations",
-                        path=f"/products/{product_id}/overview",
+                        path=f"/products/{product_id}",
                     )
                 )
-        if any(k in text for k in ("run", "check", "scan")):
+        if any(k in text for k in ("credit", "left", "remaining", "plan")):
+            used = context.get("credits_used_today", 0)
+            budget = context.get("daily_credit_budget")
+            plan = context.get("plan", "free")
+            parts.append(
+                f"You've used {used} credits today on the {plan.title()} plan"
+                + (f"; {max(budget - used, 0)} of {budget} remain." if budget else " with no daily limit.")
+                + " Each pincode check uses one credit."
+            )
+            evidence.append(ChatEvidence(metric="credits_used_today", value=used))
+        elif any(k in text for k in ("run", "check", "scan")):
             parts.append(
                 "Start a check from the product page: pick platforms and "
                 "pincodes, then launch; progress streams live and the heatmap "

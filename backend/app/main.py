@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api.catalog import router as catalog_router
 from .api.chat import router as chat_router
 from .api.competitors import router as competitors_router
 from .api.dashboard import router as dashboard_router
@@ -71,6 +72,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.frontend_origin],
+        # Any local port in development, so `next dev` on 3001 or 127.0.0.1 still connects.
+        allow_origin_regex=(
+            r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+            if settings.app_env == "development"
+            else None
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -142,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(me_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")
+    app.include_router(catalog_router, prefix="/api")
     app.include_router(products_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")
     app.include_router(competitors_router, prefix="/api")

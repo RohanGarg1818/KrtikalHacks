@@ -123,6 +123,42 @@ async def get_dashboard(
         1 for row in latest_cells.values() if row.in_stock is False
     )
 
+    oos_pincodes = len(
+        {row.pincode for row in latest_cells.values() if row.in_stock is False}
+    )
+    # Same measure as of a week ago: latest seller result per cell in the day before.
+    week_ago_rows = list(
+        (
+            await session.scalars(
+                select(CheckResult)
+                .join(Product, Product.id == CheckResult.product_id)
+                .where(
+                    Product.user_id == user.id,
+                    CheckResult.competitor_id.is_(None),
+                    CheckResult.checked_at >= week_ago - timedelta(hours=24),
+                    CheckResult.checked_at < week_ago,
+                )
+                .order_by(CheckResult.checked_at.desc())
+            )
+        ).all()
+    )
+    week_ago_cells = take_latest(
+        week_ago_rows, lambda row: (row.product_id, row.platform, row.pincode)
+    )
+    oos_pincodes_last_week = len(
+        {row.pincode for row in week_ago_cells.values() if row.in_stock is False}
+    )
+    approved_this_week = await session.scalar(
+        select(func.count())
+        .select_from(Recommendation)
+        .join(Product, Product.id == Recommendation.product_id)
+        .where(
+            Product.user_id == user.id,
+            Recommendation.status == "approved",
+            Recommendation.decided_at >= week_ago,
+        )
+    )
+
     telegram_count = await session.scalar(
         select(func.count())
         .select_from(TelegramLink)
@@ -156,6 +192,17 @@ async def get_dashboard(
             key="alerts_today",
             label="Alerts today",
             value=alerts_today_count or 0,
+        ),
+        StatTile(key="oos_pincodes", label="Out-of-stock pincodes", value=oos_pincodes),
+        StatTile(
+            key="oos_pincodes_last_week",
+            label="Out-of-stock pincodes a week ago",
+            value=oos_pincodes_last_week,
+        ),
+        StatTile(
+            key="approved_this_week",
+            label="Approved this week",
+            value=approved_this_week or 0,
         ),
     ]
     return DashboardResponse(
