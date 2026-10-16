@@ -7,6 +7,7 @@ weekly stats) and passes pure-Python guardrails before being persisted.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
@@ -43,6 +44,13 @@ BANNED_PHRASES = (
     "brigade",
     "blackmail",
     "undercut illegally",
+)
+
+_RUPEE_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_PRESCRIPTIVE_PCT_RE = re.compile(
+    r"(drop|reduce|cut|lower|decrease|raise|increase|hike)\D{0,40}?"
+    r"(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
 )
 
 
@@ -128,13 +136,53 @@ def _gap_from_context(context: dict) -> float | None:
     return round((avg_price / rival - 1) * 100, 2)
 
 
+def _pricing_violation(
+    text: str, pricing: dict, *, current_price: float | None
+) -> str | None:
+    """Return a reason when text proposes a price outside the product's rules.
+
+    Brief Section 8: drop recommendations below floor_price, below
+    cost_price*(1+min_margin_pct/100), or changing price more than
+    max_change_pct.
+    """
+    floor_price = pricing.get("floor_price")
+    cost_price = pricing.get("cost_price")
+    min_margin_pct = pricing.get("min_margin_pct")
+    max_change_pct = pricing.get("max_change_pct")
+    for raw in _RUPEE_PRICE_RE.findall(text):
+        price = float(raw)
+        if floor_price is not None and price < float(floor_price):
+            return f"price {price} is below floor_price {floor_price}"
+        if cost_price is not None and min_margin_pct is not None:
+            minimum = float(cost_price) * (1 + float(min_margin_pct) / 100)
+            if price < minimum - 0.005:
+                return (
+                    f"price {price} is below cost+margin minimum {minimum:.2f}"
+                )
+        if current_price and max_change_pct is not None:
+            change_pct = abs(price / current_price - 1) * 100
+            if change_pct > float(max_change_pct) + 0.005:
+                return (
+                    f"price {price} changes {change_pct:.1f}% from current "
+                    f"{current_price} (max {max_change_pct}%)"
+                )
+    for match in _PRESCRIPTIVE_PCT_RE.finditer(text):
+        pct = float(match.group(2))
+        if max_change_pct is not None and pct > float(max_change_pct) + 0.005:
+            return (
+                f"proposes {pct}% price change above max_change_pct {max_change_pct}"
+            )
+    return None
+
+
 def apply_recommendation_guardrails(
     candidates: list[RecommendationCandidate],
     *,
     pending_texts: set[str],
     context: dict,
+    pricing: dict | None = None,
 ) -> list[dict]:
-    """Pure filter: ban-list, truncation, priority clamp, dedupe, cap."""
+    """Pure filter: ban-list, price rules, truncation, priority clamp, dedupe."""
     stats = _stats_from_context(context)
     allowed_high = (
         stats["oos_pins"] >= HIGH_PRIORITY_MIN_OOS_PINS
@@ -143,6 +191,8 @@ def apply_recommendation_guardrails(
             and stats["max_gap_pct"] >= HIGH_PRIORITY_MIN_GAP_PCT
         )
     )
+    pricing = pricing or {}
+    current_price = context.get("avg_price")
     cleaned: list[dict] = []
     seen = {text.strip().lower() for text in pending_texts}
     for candidate in candidates:
@@ -153,6 +203,16 @@ def apply_recommendation_guardrails(
             logger.info("guardrail dropped banned recommendation: %s", action[:60])
             continue
         if len(action) < MIN_ACTION_LENGTH:
+            continue
+        violation = _pricing_violation(
+            f"{action} {impact}", pricing, current_price=current_price
+        )
+        if violation is not None:
+            logger.info(
+                "guardrail dropped price-violating recommendation (%s): %s",
+                violation,
+                action[:60],
+            )
             continue
         priority = candidate.priority.strip().lower()
         if priority not in VALID_PRIORITIES:
@@ -226,7 +286,15 @@ async def generate_recommendations(
     if room <= 0:
         return [], source
     cleaned = apply_recommendation_guardrails(
-        result.recommendations, pending_texts=pending_texts, context=context
+        result.recommendations,
+        pending_texts=pending_texts,
+        context=context,
+        pricing={
+            "floor_price": product.floor_price,
+            "cost_price": product.cost_price,
+            "min_margin_pct": product.min_margin_pct,
+            "max_change_pct": product.max_change_pct,
+        },
     )[:room]
     rows = [
         Recommendation(

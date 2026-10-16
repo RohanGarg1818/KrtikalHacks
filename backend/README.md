@@ -72,6 +72,10 @@ All provider-specific TinyFish HTTP details are isolated in `app/services/tinyfi
 - Retryable failures: which HTTP status codes or error bodies should be retried.
 - Rate limits: requests per minute/second and concurrency guidance.
 
+## Postgres / Supabase
+
+Set `DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname` to run against Postgres instead of SQLite; the engine selects the driver from the URL and no code changes are needed. Migrations use only generic SQLAlchemy types (`String`, `Float`, `JSON`, timezone-aware `DateTime`) so `alembic upgrade head` works on both SQLite and Postgres — verified by offline SQL rendering for each dialect and by compiling the full model DDL for the Postgres dialect. UUID primary keys are stored as 36-character strings for portability.
+
 ## Operations
 
 - Each response carries an `X-Request-ID` header; errors use `{"error": {"code", "message"}}` (validation and HTTP errors also keep FastAPI's `detail` for compatibility).

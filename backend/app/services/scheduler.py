@@ -25,7 +25,12 @@ from ..models.intelligence import AISummary, Alert
 from ..models.product import Product, ProductPincode
 from ..models.telegram import TelegramLink
 from ..models.user import Subscription, User, UserSettings
-from .plans import FREQUENCY_HOURS, limits_for
+from .plans import (
+    FREQUENCY_HOURS,
+    credits_exhausted,
+    daily_credits_used,
+    limits_for,
+)
 
 logger = logging.getLogger("shelfsense.scheduler")
 
@@ -88,6 +93,7 @@ async def scan_due_products() -> int:
     now = utcnow()
     await recover_orphaned_runs()
     started = 0
+    budget_cache: dict[str, bool] = {}
     async with SessionLocal() as session:
         products = list((await session.scalars(select(Product))).all())
         for product in products:
@@ -99,15 +105,26 @@ async def scan_due_products() -> int:
             plan = await session.scalar(
                 select(Subscription.plan).where(Subscription.user_id == product.user_id)
             )
-            minimum = limits_for(plan or "free").minimum_frequency_hours
+            plan_name = plan or "free"
+            minimum = limits_for(plan_name).minimum_frequency_hours
             if minimum is not None and interval_hours < minimum:
                 logger.warning(
                     "skipping product=%s: %sh interval is below the %s plan "
                     "minimum of %sh",
                     product.id,
                     interval_hours,
-                    plan or "free",
+                    plan_name,
                     minimum,
+                )
+                continue
+            if product.user_id not in budget_cache:
+                used = await daily_credits_used(session, product.user_id)
+                budget_cache[product.user_id] = credits_exhausted(plan_name, used)
+            if budget_cache[product.user_id]:
+                logger.info(
+                    "skipping product=%s: daily credit budget exhausted for plan %s",
+                    product.id,
+                    plan_name,
                 )
                 continue
             active = await session.scalar(
