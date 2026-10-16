@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models.chat import ChatConversation, ChatMessage
-from ..models.user import User
+from ..models.product import Product
+from ..models.user import Subscription, User
 from ..schemas.chat import (
     ChatMessageOut,
     ChatRequest,
@@ -26,6 +27,7 @@ from ..schemas.chat import (
 from ..services.ai import get_ai_provider, with_fallback
 from ..services.help_topics import get_help_topic, list_help_topics
 from ..services.intelligence import build_context
+from ..services.plans import daily_credits_used, limits_for
 from .products import get_owned_product
 
 router = APIRouter(tags=["chat"])
@@ -50,6 +52,40 @@ EMPTY_CONTEXT = {
     "last_week_avg_price": None,
     "recommendation_preview": "",
 }
+
+
+async def _unfocused_context(session: AsyncSession, user_id: str, message: str) -> dict:
+    """Ground an "all products" chat in the product the message names, else the one
+    with the most stock-outs, so answers carry real numbers instead of blanks."""
+    products = list(
+        (await session.scalars(select(Product).where(Product.user_id == user_id))).all()
+    )
+    text = message.lower()
+
+    def mention_score(product: Product) -> int:
+        words = {w for w in f"{product.name} {product.brand or ''}".lower().split() if len(w) > 3}
+        return sum(word in text for word in words)
+
+    named = max(products, key=mention_score, default=None)
+    if named is not None and mention_score(named) > 0:
+        return await build_context(session, named.id) or dict(EMPTY_CONTEXT)
+    best: dict | None = None
+    for product in products:
+        built = await build_context(session, product.id)
+        if built is not None and (best is None or len(built["oos_pins"]) > len(best["oos_pins"])):
+            best = built
+    return best or dict(EMPTY_CONTEXT)
+
+
+async def _usage_context(session: AsyncSession, user_id: str) -> dict:
+    plan = (
+        await session.scalar(select(Subscription.plan).where(Subscription.user_id == user_id))
+    ) or "free"
+    return {
+        "plan": plan,
+        "credits_used_today": await daily_credits_used(session, user_id),
+        "daily_credit_budget": limits_for(plan).daily_credit_budget,
+    }
 
 
 def _message_payload(row: ChatMessage) -> ChatMessageOut:
@@ -103,11 +139,14 @@ async def _answer_message(
         {"role": row.role, "content": row.content}
         for row in reversed(history_rows)
     ]
-    context = EMPTY_CONTEXT
+    context = dict(EMPTY_CONTEXT)
     if conversation.product_id:
         built = await build_context(session, conversation.product_id)
         if built is not None:
             context = built
+    else:
+        context = await _unfocused_context(session, conversation.user_id, content)
+    context.update(await _usage_context(session, conversation.user_id))
     provider = get_ai_provider()
     result, source = await with_fallback(
         provider, "chat", context, content, history
@@ -274,11 +313,13 @@ async def post_chat(
         )
     else:
         product_id: str | None = None
-        title = "New chat"
+        # Name the conversation after its first question so history is scannable.
+        first = " ".join(payload.message.split())
+        title = first if len(first) <= 60 else first[:57].rstrip() + "…"
         if payload.product_id is not None:
             product = await get_owned_product(session, user.id, payload.product_id)
             product_id = product.id
-            title = f"Chat about {product.name}"
+            title = f"{product.name}: {title}"[:300]
         conversation = ChatConversation(
             user_id=user.id,
             product_id=product_id,

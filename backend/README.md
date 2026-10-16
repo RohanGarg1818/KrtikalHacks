@@ -23,6 +23,17 @@ Run the tests and linter:
 .venv/bin/ruff check app tests scripts
 ```
 
+## Endpoints added for the frontend
+
+- `GET /api/pincodes`, `GET /api/plans` — pincode catalogue and plan limits.
+- `GET /api/products/{id}/pincodes` — current pincode/platform selection.
+- `GET|PUT /api/products/{id}/listings` — per-platform product links.
+- `POST /api/products/{id}/alert-rules/parse` — plain-English rule → structured rule (Gemini or rule-based).
+- `PATCH /api/me` — profile, language, timezone, default city.
+- `POST /api/products/{id}/telegram/simulate-link` — mock mode only: redeem a link code as if the bot received `/start <code>`.
+
+Chats without a product focus are grounded in the product the message names (else the one with the most stock-outs), plus plan credit usage.
+
 ## Current plan limits
 
 - Free: 3 products, 5 pincodes per product, weekly checks.
