@@ -470,8 +470,8 @@ const POLICIES: { id: string; title: string; points: string[] }[] = [
     id: "security",
     title: "Security",
     points: [
-      "TinyFish agents only read public product pages, the way a shopper would. They never log in to marketplaces with your credentials.",
-      "The checkout step only reads the final price — agents never place an order or enter payment details.",
+      "TinyFish agents only read product pages, the way a shopper would. They never use your personal marketplace accounts; where an app requires sign-in (Instamart), a ShelfSense team test account is used.",
+      "Every check is read-only: agents never add to cart, open checkout, place an order or enter payment details.",
       "Evidence screenshots are tied to your account. In production they are served only to you, after an ownership check.",
     ],
   },

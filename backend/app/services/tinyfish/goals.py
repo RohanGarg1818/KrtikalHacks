@@ -4,14 +4,14 @@ from __future__ import annotations
 
 DOMAINS: dict[str, str] = {
     "blinkit": "blinkit.com",
-    "zepto": "zeptonow.com",
+    "zepto": "zepto.com",
     "instamart": "swiggy.com/instamart",
     "amazon": "amazon.in",
     "flipkart": "flipkart.com",
 }
 SITES: dict[str, str] = {
     "blinkit": "Blinkit (blinkit.com)",
-    "zepto": "Zepto (zeptonow.com)",
+    "zepto": "Zepto (zepto.com)",
     "instamart": "Swiggy Instamart (instamart.swiggy.com)",
     "amazon": "Amazon.in (amazon.in)",
     "flipkart": "Flipkart (flipkart.com)",

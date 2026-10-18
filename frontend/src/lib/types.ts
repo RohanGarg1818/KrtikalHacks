@@ -327,6 +327,17 @@ export interface RunResultRef {
   price: number | null;
   in_stock: boolean | null;
   screenshot_url: string | null;
+  mrp?: number | null;
+  eta_minutes?: number | null;
+  area?: string | null;
+  error?: string | null;
+  checked_at?: string;
+  method?: "agent" | "fetch" | "browser" | "cached" | "simulated";
+  pincode_specific?: boolean;
+  source_url?: string | null;
+  delivery_text?: string | null;
+  notes?: string[];
+  step_count?: number;
 }
 
 /** `GET /runs/{id}`. */
@@ -398,6 +409,16 @@ export interface CheckResultDetail {
   screenshot_url: string | null;
   checked_at: string;
   agent: AgentTrace | null;
+}
+
+/** `GET /tinyfish/apps`: how each app is checked right now. */
+export interface AppStatus {
+  platform: string;
+  label: string;
+  status: "live" | "cached" | "unavailable" | "simulated";
+  method: "agent" | "fetch" | "simulated" | "none";
+  pincode_specific: boolean;
+  detail: string;
 }
 
 /** `GET /tinyfish/usage`. */

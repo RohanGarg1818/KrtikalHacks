@@ -4,13 +4,14 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import AgentConsole from "@/components/agent/AgentConsole";
+import CheckDetails from "@/components/agent/CheckDetails";
 import { ModeBadge } from "@/components/agent/parts";
 import { useReplayState, useRunTraces } from "@/components/agent/useReplay";
 import { CardSkeleton, Empty, ErrorCard, Skeleton } from "@/components/ui";
 import { useApi } from "@/lib/api";
 import { duration, formatDateTime, timeAgo, useDisplayTimeZone } from "@/lib/format";
 import { prefersReducedMotion } from "@/lib/motion";
-import type { Competitor, ProductCard, RunSummary, TinyFishUsage } from "@/lib/types";
+import type { AppStatus, Competitor, ProductCard, RunSummary, TinyFishUsage } from "@/lib/types";
 import { isActiveRunStatus, useRun } from "@/lib/useRun";
 
 const STATUS: Record<string, { label: string; icon: string; cls: string }> = {
@@ -69,6 +70,44 @@ function UsageTiles({ usage }: { usage: TinyFishUsage }) {
           </div>
         </div>
       ))}
+    </section>
+  );
+}
+
+const APP_STATUS_STYLE: Record<AppStatus["status"], { label: string; tone: string }> = {
+  live: { label: "Live", tone: "bg-sage text-ink" },
+  cached: { label: "Cached", tone: "bg-sand text-ink" },
+  unavailable: { label: "Unavailable", tone: "bg-linen text-ink/70 border-dashed" },
+  simulated: { label: "Simulated", tone: "bg-linen text-ink" },
+};
+const METHOD_LABEL: Record<AppStatus["method"], string> = {
+  agent: "Agent API · per pincode",
+  fetch: "Fetch API · listing-wide",
+  simulated: "Simulator",
+  none: "Not checked",
+};
+
+function AppStatusPanel({ apps }: { apps: AppStatus[] }) {
+  return (
+    <section className="flex flex-col gap-4" aria-label="App status">
+      <h2 className="text-[28px] leading-tight tracking-[-0.5px]">Apps</h2>
+      <ul className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+        {apps.map((app) => {
+          const style = APP_STATUS_STYLE[app.status];
+          return (
+            <li key={app.platform} className="card p-5 flex flex-col gap-3 min-w-0">
+              <div className="flex flex-col items-start gap-2">
+                <p className="font-semibold text-[16px] leading-tight">{app.label}</p>
+                <span className={`rounded-full border-2 border-ink px-2.5 py-0.5 text-[12px] font-bold uppercase tracking-wide ${style.tone}`}>
+                  {style.label}
+                </span>
+              </div>
+              <p className="text-[13px] font-semibold text-slate">{METHOD_LABEL[app.method]}</p>
+              <p className="text-[13px] leading-[19px] text-ink/80">{app.detail}</p>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
@@ -174,6 +213,7 @@ function AgentsInner() {
   const selectedParam = params.get("run");
 
   const usage = useApi<TinyFishUsage>("/tinyfish/usage", { refreshInterval: 30_000 });
+  const apps = useApi<AppStatus[]>("/tinyfish/apps", { refreshInterval: 60_000 });
   const products = useApi<ProductCard[]>("/products");
   const runsKey = `/runs?limit=20${productFilter ? `&product_id=${encodeURIComponent(productFilter)}` : ""}`;
   const anyActive = (d?: RunSummary[]) => !!d?.some((r) => isActiveRunStatus(r.status));
@@ -198,8 +238,9 @@ function AgentsInner() {
           <p className="eyebrow text-slate">TinyFish web agents</p>
           <h1 className="text-[44px] sm:text-[56px] leading-[1.05] tracking-[-1.2px]">Agents</h1>
           <p className="text-[17px] leading-[27px] text-ink/85">
-            Every check is a real browser session: the agent opens the platform, sets the delivery pincode, finds the listing and reads
-            price, stock and delivery time — then walks to checkout to see the <b>true price</b> a shopper pays (it never places an order).
+            Quick-commerce checks are real TinyFish agent sessions: the agent opens the app, sets the delivery pincode, finds the listing
+            and reads price, stock and delivery time. Amazon and Flipkart pages are read with the TinyFish Fetch API. Every check is
+            read-only: no cart, no checkout, no login.
           </p>
         </div>
         <ModeBadge mode={usage.data?.mode} className="text-[13px]! px-4! py-1.5!" />
@@ -215,6 +256,14 @@ function AgentsInner() {
             <Skeleton key={i} className="h-[170px] rounded-[20px]" />
           ))}
         </div>
+      )}
+
+      {apps.error ? (
+        <ErrorCard error={apps.error} onRetry={() => apps.mutate()} />
+      ) : apps.data ? (
+        <AppStatusPanel apps={apps.data} />
+      ) : (
+        <Skeleton className="h-[150px] rounded-[20px]" />
       )}
 
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -270,6 +319,7 @@ function AgentsInner() {
               ) : (
                 <ReplayPanel key={selected.id} run={selected} />
               )}
+              <CheckDetails key={`details-${selected.id}`} runId={selected.id} active={isActiveRunStatus(selected.status)} />
             </>
           ) : runs.data && list.length === 0 ? null : (
             <CardSkeleton rows={5} />

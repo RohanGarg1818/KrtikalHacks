@@ -1,8 +1,8 @@
 """TinyFish client interface.
 
 The runner and every other service depend only on this module. All
-provider-specific HTTP details live in ``http_client.py``; the simulated
-agent lives in ``mock_client.py``.
+TinyFish SDK calls live in ``tinyfish_client.py``; the simulated agent lives
+in ``mock_client.py``.
 """
 
 from __future__ import annotations
@@ -134,19 +134,16 @@ def tinyfish_mode() -> Literal["simulated", "live"]:
 
 
 def get_tinyfish_client() -> TinyFishClient:
-    """Return the real client when fully configured, otherwise the simulator."""
+    """Return the real SDK client when a key is set, otherwise the simulator."""
     from ...config import get_settings
+    from .demo_cache import CachedFallbackClient
     from .mock_client import MockTinyFishClient
 
     settings = get_settings()
     if settings.tinyfish_enabled:
-        if not settings.tinyfish_agent_base_url:
-            raise TinyFishError(
-                "TINYFISH_AGENT_BASE_URL must be set when the TinyFish API key is "
-                "enabled; see .env.example",
-                retryable=False,
-            )
-        from .http_client import HttpTinyFishClient
+        from .tinyfish_client import TinyFishLiveClient
 
-        return HttpTinyFishClient(settings)
+        return CachedFallbackClient(TinyFishLiveClient(settings), demo=settings.tinyfish_demo)
+    if settings.tinyfish_demo:
+        return CachedFallbackClient(MockTinyFishClient(), demo=True)
     return MockTinyFishClient()

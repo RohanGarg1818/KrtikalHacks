@@ -346,7 +346,7 @@ async def test_alert_rules_put_and_get() -> None:
 
 
 @pytest.mark.asyncio
-async def test_link_code_flow_and_expiry() -> None:
+async def test_link_code_flow_and_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
     user = await make_user()
     product_id = await make_product(user.id)
     async with SessionLocal() as session:
@@ -354,12 +354,18 @@ async def test_link_code_flow_and_expiry() -> None:
         assert code.code.startswith("SS-")
         assert len(code.code.split("-")) == 3
         assert code.expires_at > utcnow()
-        assert code.code in build_deeplink(code.code)
+        # Deep links need a bot username; without one there is no link.
+        assert build_deeplink(code.code) is None
+        monkeypatch.setattr(get_settings(), "telegram_bot_username", "ShelfSenseBot")
+        assert build_deeplink(code.code) == f"https://t.me/ShelfSenseBot?start={code.code}"
 
         link = await redeem_link_code(
             session, code_value=code.code, chat_id="42", chat_title="Ops"
         )
         assert link is not None
+        # Tapping Start twice in the same chat keeps the link instead of "invalid".
+        again = await redeem_link_code(session, code_value=code.code, chat_id="42")
+        assert again is not None and again.id == link.id
         assert link.user_id == user.id
         assert link.product_id == product_id
         assert link.chat_id == "42"

@@ -39,6 +39,7 @@ from ..models.intelligence import Alert, AlertRule
 from ..models.product import Pincode, Product
 from ..models.telegram import TelegramLink
 from ..models.user import User, UserSettings
+from ..utils.geo import in_city_zone
 from .ai.fallback import FallbackAIProvider
 from .heatmap import selected_pairs
 from .insights import _latest_rival_rows, _latest_seller_rows
@@ -111,12 +112,19 @@ def _rule_threshold(rule: AlertRule | dict, default: float | None) -> float | No
     return float(threshold) if threshold is not None else default
 
 
-def _matches_area(area: str, city: str, wanted: str) -> bool:
+def _matches_area(
+    area: str, city: str, wanted: str, coords: tuple[float, float] | None = None
+) -> bool:
     wanted = wanted.strip().lower()
     if not wanted:
         return False
-    names = (area.lower(), city.lower())
-    return any(wanted == name or wanted in name or name in wanted for name in names)
+    zone = in_city_zone(wanted, city, coords)
+    if zone is not None:
+        return zone
+    area, city = area.lower(), city.lower()
+    # Never match on the city name inside a longer phrase: "South Delhi" holds
+    # "delhi" but must not select every Delhi pincode.
+    return wanted == city or wanted == area or wanted in area or area in wanted
 
 
 async def resolve_rule_pincodes(session: AsyncSession, areas: list[str]) -> list[str]:
@@ -127,7 +135,10 @@ async def resolve_rule_pincodes(session: AsyncSession, areas: list[str]) -> list
     return sorted(
         row.code
         for row in rows
-        if any(_matches_area(row.area_name, row.city, wanted) for wanted in areas)
+        if any(
+            _matches_area(row.area_name, row.city, wanted, (row.lat, row.lng))
+            for wanted in areas
+        )
     )
 
 
@@ -141,6 +152,7 @@ class _Evaluation:
         seller_latest: dict[tuple, CheckResult],
         rival_latest: dict[tuple, CheckResult],
         places: dict[str, tuple[str, str]],
+        coords: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         self.product = product
         self.now = now
@@ -148,6 +160,7 @@ class _Evaluation:
         self.seller_latest = seller_latest
         self.rival_latest = rival_latest
         self.places = places
+        self.coords = coords or {}
         self.cheapest_rival: dict[tuple[str, str], float] = {}
         for (_competitor_id, platform, pincode), row in rival_latest.items():
             if row.status != "ok" or row.in_stock is not True or row.price is None:
@@ -189,7 +202,8 @@ def _area_pins(ev: _Evaluation, rule: AlertRule | dict) -> set[str]:
     pins = {str(code) for code in rule_json.get("pincodes") or []}
     areas = [str(area) for area in rule_json.get("areas") or []]
     for code, (area, city) in ev.places.items():
-        if any(_matches_area(area, city, wanted) for wanted in areas):
+        coords = ev.coords.get(code)
+        if any(_matches_area(area, city, wanted, coords) for wanted in areas):
             pins.add(code)
     return pins
 
@@ -388,13 +402,12 @@ async def evaluate_alerts(
         for key, row in (await _latest_rival_rows(session, product.id, now=now)).items()
         if key[1] in pairs.get(key[2], ())
     }
-    places = {
-        row.code: (row.area_name, row.city)
-        for row in (
-            await session.scalars(select(Pincode).where(Pincode.code.in_(pairs)))
-        ).all()
-    }
-    ev = _Evaluation(product, now, seller_latest, rival_latest, places)
+    pincode_rows = (
+        await session.scalars(select(Pincode).where(Pincode.code.in_(pairs)))
+    ).all()
+    places = {row.code: (row.area_name, row.city) for row in pincode_rows}
+    coords = {row.code: (row.lat, row.lng) for row in pincode_rows}
+    ev = _Evaluation(product, now, seller_latest, rival_latest, places, coords)
 
     candidates: list[dict] = []
     for rule in rules:
@@ -473,7 +486,7 @@ async def deliver_alerts(
     up later. A chat only receives alerts raised after it was linked.
     Delivery is a no-op when the bot is not running.
     """
-    from .telegram import send_telegram_message  # local import avoids cycles
+    from .telegram_features import alert_photo, send_alert  # local import avoids cycles
 
     if not alerts:
         return 0
@@ -508,6 +521,7 @@ async def deliver_alerts(
         ).all()
     }
     for alert in alerts:
+        photo = await alert_photo(session, alert)
         for link in links_by_product.get(alert.product_id, []):
             if link.alert_types and alert.kind not in link.alert_types:
                 continue
@@ -525,7 +539,7 @@ async def deliver_alerts(
                 local_now = datetime.now(UTC)
             if _within_quiet_hours(user_settings, local_now):
                 continue
-            sent = await send_telegram_message(link.chat_id, f"[ShelfSense] {alert.message}")
+            sent = await send_alert(link.chat_id, f"[ShelfSense] {alert.message}", photo)
             if sent:
                 alert.sent_telegram = True
                 delivered += 1

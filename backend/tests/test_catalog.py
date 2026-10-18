@@ -37,7 +37,11 @@ async def test_parse_plain_english_alert_rule() -> None:
             json={"text": "Alert me if we go out of stock in South Delhi"},
         )
     assert res.status_code == 200
-    assert res.json()["kind"] == "oos_any"
+    # A named area becomes an area-scoped rule rather than "any pincode".
+    assert res.json()["kind"] == "oos_area"
+    pincodes = res.json()["rule_json"]["pincodes"]
+    assert "110017" in pincodes  # Saket
+    assert "110005" not in pincodes  # Karol Bagh is not South Delhi
 
 
 @pytest.mark.asyncio

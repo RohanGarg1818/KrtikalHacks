@@ -68,7 +68,7 @@ Set these environment variables (see `.env.example`) to move each integration fr
 
 | Variable | Switches |
 | --- | --- |
-| `TINYFISH_API_KEY` + `TINYFISH_*_BASE_URL` | Real TinyFish agent/search/fetch HTTP client |
+| `TINYFISH_API_KEY` | Live TinyFish client (official `tinyfish` SDK) |
 | `GEMINI_API_KEY` (optionally `GEMINI_MODEL`) | Gemini summaries, recommendations, chat, alert-rule parsing |
 | `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_BOT_USERNAME`) | Long-polling bot and real message delivery |
 | `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` | Remote screenshot storage |
@@ -76,19 +76,34 @@ Set these environment variables (see `.env.example`) to move each integration fr
 | `DATABASE_URL` | Postgres/Supabase instead of SQLite |
 | `FRONTEND_ORIGIN` | CORS allow-list and Telegram "Details" button URLs |
 
-## TinyFish documentation TODOs
+## TinyFish (live checks)
 
-All provider-specific TinyFish HTTP details are isolated in `app/services/tinyfish/http_client.py` behind the `TinyFishClient` interface. The mock client is the source of truth until the real API is confirmed. Before enabling the real client, confirm everything below from `docs.tinyfish.ai`:
+All TinyFish calls live in `app/services/tinyfish/tinyfish_client.py`, built on the official `tinyfish` SDK and verified against docs.tinyfish.ai. It implements the same `TinyFishClient` interface as the simulator, so the runner, SSE stream, screenshot storage and heatmap work unchanged.
 
-- Agent run endpoint: URL path, HTTP method, request body schema (goal/prompt fields), authentication header format.
-- Search endpoint: URL, query parameters, response shape for search hits.
-- Fetch endpoint: URL, request body, response fields for fetched marketplace pages.
-- Response JSON mapping: how `product`, `in_stock`, `price`, `mrp`, `eta_minutes`, `rating` are named in real responses.
-- Screenshot delivery: inline base64 vs URL, image format, size limits.
-- Credit accounting: which response field reports `credits_used` per job.
-- Timeout policy: recommended per-request timeout and run-level deadline.
-- Retryable failures: which HTTP status codes or error bodies should be retried.
-- Rate limits: requests per minute/second and concurrency guidance.
+**How each app is checked** (`CHECK_STRATEGY`, from live tests on 2026-10-18 at 110017):
+
+| App | Method | Live result |
+| --- | --- | --- |
+| Instamart | Agent API, stealth browser | Works: sets the pincode, reads price/stock/ETA (~4 min) |
+| Zepto | Agent API, stealth browser | Works (~3 min) |
+| Blinkit | Agent API, stealth browser | Blinkit blocks automation ("access denied"); the check fails fast as *blocked* |
+
+Plain Browser API sessions (Playwright over CDP, Indian proxy) are also implemented and selectable per app, but in testing Blinkit returned 403s, Zepto rendered blank, and Instamart required phone login once a location was set. The agent goal is strictly read-only: it never clicks ADD, never opens the cart or checkout, and never logs in. Each result stores the agent's last screenshot as proof (`GET /v1/runs/{id}/steps/{step}/screenshot`). The Agent API only accepts proxy countries US/GB/CA/DE/FR/JP/AU, so agent runs use TinyFish's default network.
+
+**Cost guard.** Live runs needing more than `TINYFISH_LIVE_MAX_JOBS_PER_RUN` checks (default 6) are refused with `422 live_job_limit`, including scheduled runs, so the scheduler can never start hundreds of paid agent runs.
+
+**Errors.** Bad key (401/403) and an empty wallet (402) fail fast and are logged as errors. Rate limits (429), 5xx and network errors are retried by the SDK, then once more by the runner. Blocked pages and unserviceable pincodes fail without a retry. Every failure keeps its agent trace for replay.
+
+**Try one check end to end** (uses real credits: one agent run, about 4 minutes):
+
+```bash
+pip install -r requirements.txt       # adds tinyfish + playwright
+echo "TINYFISH_API_KEY=sk-..." >> .env  # never commit .env
+python -m scripts.check_pincode --app instamart --pincode 110017 \
+    --product "Amul Taaza Toned Milk 500 ml"
+```
+
+It streams each agent step, prints the result JSON (`app, pincode, in_stock, price, eta, screenshot_url, ...`), and exits non-zero on failure. Without a key, add `--allow-simulated` to run the same path against the simulator.
 
 ## Postgres / Supabase
 

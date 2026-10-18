@@ -176,6 +176,38 @@ async def create_run(
     jobs = await build_jobs(session, product, platforms, pincodes)
     if not jobs:
         raise HTTPException(status_code=422, detail="No check jobs to run")
+    settings = get_settings()
+    if settings.tinyfish_enabled:
+        # Apps that block automation are not checked live (TINYFISH_LIVE_PLATFORMS).
+        jobs = [job for job in jobs if job.platform in settings.live_platforms]
+        if not jobs:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "no_live_platforms",
+                    "message": "None of the selected apps can be checked live. Live checks "
+                    f"cover: {', '.join(sorted(settings.live_platforms))}.",
+                },
+            )
+    limit = settings.tinyfish_live_max_jobs_per_run
+    # Only agent checks are slow and paid; Fetch checks (Amazon, Flipkart) read
+    # one cached page per run and cost nothing extra.
+    from .tinyfish.tinyfish_client import CHECK_STRATEGY
+
+    agent_jobs = [job for job in jobs if CHECK_STRATEGY.get(job.platform) == "agent"]
+    if settings.tinyfish_enabled and limit and len(agent_jobs) > limit:
+        # Live agent checks take minutes and cost real credits each.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "live_job_limit",
+                "message": (
+                    f"This check needs {len(agent_jobs)} live TinyFish agent runs; the limit is "
+                    f"{limit} per run (TINYFISH_LIVE_MAX_JOBS_PER_RUN). Pick fewer "
+                    "pincodes or platforms."
+                ),
+            },
+        )
     run = CheckRun(
         id=str(uuid4()),
         product_id=product.id,

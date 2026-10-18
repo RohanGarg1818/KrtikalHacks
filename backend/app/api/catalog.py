@@ -16,6 +16,7 @@ from ..models.user import User
 from ..schemas.common import PLATFORMS, Platform, WebUrl, required_text
 from ..schemas.products import AlertRuleOut, PincodeSelection
 from ..services.ai import get_ai_provider, with_fallback
+from ..services.alerts import resolve_rule_pincodes
 from ..services.plans import PLAN_LIMITS
 from ..services.telegram import redeem_link_code
 from .products import get_owned_product, get_user_plan
@@ -174,11 +175,19 @@ async def parse_alert_rule(
     """Turn a plain-English rule into a structured one; the client saves it via PUT."""
     await get_owned_product(session, user.id, product_id)
     rule, _source = await with_fallback(get_ai_provider(), "parse_alert_rule", payload.text)
+    rule_json = dict(rule.rule_json or {})
+    if rule.kind == "oos_area":
+        # Show the seller exactly which pincodes "South Delhi" etc. cover.
+        named = [str(code) for code in rule_json.get("pincodes") or []]
+        resolved = await resolve_rule_pincodes(
+            session, [str(area) for area in rule_json.get("areas") or []]
+        )
+        rule_json["pincodes"] = sorted(set(named) | set(resolved))
     return AlertRuleOut(
         kind=rule.kind,
         threshold=rule.threshold,
         rule_text=rule.rule_text or payload.text,
-        rule_json=rule.rule_json,
+        rule_json=rule_json,
     )
 
 

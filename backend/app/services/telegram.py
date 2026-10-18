@@ -153,6 +153,18 @@ async def redeem_link_code(
     product = await session.get(Product, row.product_id) if row is not None else None
     if row is None or product is None:
         await session.rollback()
+        # The same chat re-sending a code it already redeemed (Telegram's Start
+        # button tapped twice) is not a failure: it is simply still linked.
+        used = await session.get(TelegramLinkCode, code_value)
+        if used is not None and used.used_at is not None:
+            already = await session.scalar(
+                select(TelegramLink).where(
+                    TelegramLink.product_id == used.product_id,
+                    TelegramLink.chat_id == chat_id,
+                )
+            )
+            if already is not None:
+                return already
         await _record_failed_attempt(session, chat_id)
         return None
     existing = await session.scalar(
@@ -329,9 +341,17 @@ async def _handle_start(update, context) -> None:
     if message is None or chat is None:
         return
     if not args:
-        await message.reply_text(
-            "Send /start <code> with the code from your ShelfSense product page."
-        )
+        from .telegram_features import main_menu
+
+        async with SessionLocal() as session:
+            linked = bool(await chat_links(session, str(chat.id)))
+        if linked:
+            await message.reply_text("ShelfSense menu:", reply_markup=main_menu())
+        else:
+            await message.reply_text(
+                "Welcome to ShelfSense! Open your product's Telegram tab on the "
+                "ShelfSense website and tap the link (or send /link <code>) to connect."
+            )
         return
     sender = update.effective_user
     async with SessionLocal() as session:
@@ -356,7 +376,12 @@ async def _handle_start(update, context) -> None:
             return
         product = await session.get(Product, link.product_id)
         name = product.name if product else "your product"
-    await message.reply_text(f"Connected ✓ to {name}")
+    from .telegram_features import main_menu
+
+    await message.reply_text(
+        f"Connected ✓ to {name}\n\nYou'll get stock and price alerts here. Try the menu:",
+        reply_markup=main_menu(),
+    )
 
 
 async def _handle_status(update, context) -> None:
@@ -468,7 +493,50 @@ async def _handle_stop(update, context) -> None:
         await message.reply_text("This chat was not connected.")
 
 
+async def _handle_menu(update, context) -> None:
+    from .telegram_features import main_menu
+
+    del context
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text("ShelfSense menu:", reply_markup=main_menu())
+
+
+async def _handle_compare(update, context) -> None:
+    from .telegram_features import send_compare
+
+    del context
+    message, chat = update.effective_message, update.effective_chat
+    if message is not None and chat is not None:
+        await send_compare(message, str(chat.id))
+
+
+async def _handle_check(update, context) -> None:
+    from .telegram_features import start_check_flow
+
+    del context
+    message, chat = update.effective_message, update.effective_chat
+    if message is not None and chat is not None:
+        await start_check_flow(message, str(chat.id))
+
+
 async def _handle_callback(update, context) -> None:
+    from .telegram_features import handle_check_callback
+
+    query = update.callback_query
+    data = (query.data or "") if query is not None else ""
+    if data.startswith("menu:"):
+        await query.answer()
+        action = data.split(":", 1)[1]
+        if action == "status":
+            await _handle_status(update, context)
+        elif action == "compare":
+            await _handle_compare(update, context)
+        elif action == "check":
+            await _handle_check(update, context)
+        return
+    if await handle_check_callback(update, context):
+        return
     await handle_approve_callback(update, context)
 
 
@@ -492,8 +560,14 @@ async def start_bot() -> bool:
         application.add_handler(CommandHandler("status", _handle_status))
         application.add_handler(CommandHandler("ask", _handle_ask))
         application.add_handler(CommandHandler("stop", _handle_stop))
+        application.add_handler(CommandHandler(["menu", "help"], _handle_menu))
+        application.add_handler(CommandHandler("compare", _handle_compare))
+        application.add_handler(CommandHandler("check", _handle_check))
         application.add_handler(CallbackQueryHandler(_handle_callback))
         await application.initialize()
+        from .telegram_features import configure_bot_profile
+
+        await configure_bot_profile(application.bot)
         await application.start()
         if application.updater is not None:
             await application.updater.start_polling()

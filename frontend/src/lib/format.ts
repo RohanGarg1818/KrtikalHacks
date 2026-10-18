@@ -150,3 +150,11 @@ export function rupeesPrecise(v: number | null | undefined) {
   if (v == null) return "—";
   return rupees(v, Math.abs(v - Math.round(v)) > 0.004 ? 2 : 0);
 }
+
+/** Delivery estimate: minutes for quick commerce ("12m"), days for marketplaces ("3d"). */
+export function etaLabel(minutes: number | null | undefined) {
+  if (minutes == null) return "";
+  if (minutes < 120) return `${minutes}m`;
+  const days = Math.max(1, Math.round(minutes / 1440));
+  return `${days}d`;
+}
