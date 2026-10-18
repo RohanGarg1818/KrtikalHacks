@@ -2,11 +2,13 @@
 
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
-import { useState } from "react";
-import { api, useApi } from "@/lib/api";
+import { useState, useSyncExternalStore } from "react";
+import { api, ApiError, errorMessage, useApi } from "@/lib/api";
+import { toast } from "@/lib/toast";
 import type { Dashboard, Me, Plans, ProductCard, Recommendation } from "@/lib/types";
 import { greeting, platformLabel, timeAgo } from "@/lib/format";
 import AddProductDialog from "@/components/AddProductDialog";
+import { productState } from "@/components/products/ProductViews";
 import { CardSkeleton, Empty, ErrorCard, Meter, PincodeStrip, Skeleton, StatTile, Sticker } from "@/components/ui";
 
 const ALERT_ICON: Record<string, string> = {
@@ -16,7 +18,9 @@ const ALERT_ICON: Record<string, string> = {
   oos_any: "alert-box",
 };
 
-const needsAttention = (p: ProductCard) => p.status_strip.some((s) => s.status === "out_of_stock" || s.status === "price_gap");
+const noop = () => () => {};
+/** Time-of-day greeting computed on the client only (the server's clock/zone would mismatch on hydration). */
+const useGreeting = () => useSyncExternalStore(noop, greeting, () => "Hello");
 
 function priceLine(p: ProductCard) {
   const v = p.price_position_vs_avg_rival;
@@ -32,14 +36,15 @@ export default function DashboardPage() {
   const products = useApi<ProductCard[]>("/products");
   const [filter, setFilter] = useState<"all" | "attention" | "healthy">("all");
   const [adding, setAdding] = useState(false);
+  const hello = useGreeting();
 
   if (dash.error) return <ErrorCard error={dash.error} onRetry={() => dash.mutate()} />;
 
   const tile = (key: string) => dash.data?.tiles.find((t) => t.key === key)?.value ?? 0;
   const limits = plans.data?.plans.find((p) => p.plan === me.data?.plan);
   const all = products.data ?? [];
-  const attention = all.filter(needsAttention);
-  const healthy = all.filter((p) => !needsAttention(p));
+  const attention = all.filter((p) => productState(p) === "attention");
+  const healthy = all.filter((p) => productState(p) === "healthy");
   const shown = (filter === "attention" ? attention : filter === "healthy" ? healthy : all).slice(0, 3);
   const cheaper = all.filter((p) => (p.price_position_vs_avg_rival ?? 0) <= 0 && p.price_position_vs_avg_rival != null).length;
   const tgConnected = all.filter((p) => p.telegram_connected);
@@ -52,7 +57,7 @@ export default function DashboardPage() {
       <section className="section-head flex-wrap items-end">
         <div>
           <h1 className="text-[40px] md:text-[56px] leading-[1.05] tracking-[-1.12px]">
-            {greeting()}, {me.data?.profile.name.split(" ")[0] ?? "…"}
+            {hello}, {me.data?.profile.name.split(" ")[0] ?? "…"}
           </h1>
           <p className="text-[18px] leading-[27px] font-medium text-slate mt-2">
             {attention.length
@@ -105,19 +110,33 @@ export default function DashboardPage() {
         <div className="section-head flex-wrap">
           <h2 className="text-[32px] leading-10 tracking-[-0.64px]">Your products</h2>
           <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex gap-2">
-              <button className="pill" data-active={filter === "all"} onClick={() => setFilter("all")}>All {all.length}</button>
-              <button className="pill" data-active={filter === "attention"} onClick={() => setFilter("attention")}>Needs attention {attention.length}</button>
-              <button className="pill" data-active={filter === "healthy"} onClick={() => setFilter("healthy")}>Healthy {healthy.length}</button>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Filter products">
+              {(
+                [
+                  ["all", "All", all.length],
+                  ["attention", "Needs attention", attention.length],
+                  ["healthy", "Healthy", healthy.length],
+                ] as const
+              ).map(([key, label, n]) => (
+                <button key={key} className="pill" data-active={filter === key} aria-pressed={filter === key} onClick={() => setFilter(key)}>
+                  {label} {products.data ? n : "–"}
+                </button>
+              ))}
             </div>
             <Link href="/products" className="font-semibold text-[16px] underline underline-offset-4">View all →</Link>
           </div>
         </div>
-        {!products.data ? (
+        {products.error ? (
+          <ErrorCard error={products.error} onRetry={() => products.mutate()} />
+        ) : !products.data ? (
           <CardSkeleton />
         ) : shown.length === 0 ? (
-          <Empty title="No products here">
-            <button className="btn btn-primary btn-sm mt-3" onClick={() => setAdding(true)}>Add a product</button>
+          <Empty title={all.length ? "No products here" : "No products yet"}>
+            {all.length ? (
+              "Nothing matches this filter right now."
+            ) : (
+              <button className="btn btn-primary btn-sm mt-3" onClick={() => setAdding(true)}>Add a product</button>
+            )}
           </Empty>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 stagger">
@@ -181,16 +200,28 @@ export default function DashboardPage() {
           </p>
           <p className="font-semibold text-[20px]">products connected to Telegram</p>
         </div>
-        {firstUnlinked ? (
+        {!all.length ? (
+          <button className="btn btn-ink px-[26px] py-4" onClick={() => setAdding(true)}>
+            Add a product first →
+          </button>
+        ) : firstUnlinked ? (
           <Link href={`/products/${firstUnlinked.id}/telegram`} className="btn btn-ink px-[26px] py-4">
             Connect remaining {all.length - tgConnected.length} →
           </Link>
         ) : (
-          <span className="btn btn-ink px-[26px] py-4">✓ All connected</span>
+          <span className="inline-flex items-center gap-2 rounded-[12px] border-2 border-ink bg-ink text-linen px-[26px] py-4 font-semibold">✓ All connected</span>
         )}
       </section>
 
-      {adding && <AddProductDialog onClose={() => { setAdding(false); products.mutate(); }} />}
+      {adding && (
+        <AddProductDialog
+          onClose={() => {
+            setAdding(false);
+            void products.mutate();
+            void me.mutate();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -229,28 +260,44 @@ function ActionCard({ rec, onChange }: { rec: Recommendation & { product_name?: 
   const [busy, setBusy] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   async function act(kind: "approve" | "dismiss") {
+    if (busy || done) return;
     setBusy(kind);
     try {
       await api(`/recommendations/${rec.id}/${kind}`, { method: "POST" });
       setDone(kind === "approve" ? "✓ Approved" : "Dismissed");
+      toast(kind === "approve" ? "Recommendation approved" : "Recommendation dismissed");
       setTimeout(onChange, 900);
+    } catch (e) {
+      // 409: already decided elsewhere (e.g. from Telegram) — refresh rather than pretend.
+      if (e instanceof ApiError && e.status === 409) {
+        toast.info("This recommendation was already decided");
+        onChange();
+      } else {
+        toast.error(errorMessage(e, "Couldn't update the recommendation"));
+      }
     } finally {
       setBusy(null);
     }
   }
   return (
-    <div className={`card p-[26px] flex flex-wrap items-center gap-6 transition-opacity ${done ? "opacity-60" : ""}`}>
+    <div className={`card p-[26px] flex flex-wrap items-center gap-6 ${done ? "border-dashed shadow-none" : ""}`}>
       <div className="flex-1 min-w-[220px]">
         <p className="font-semibold text-[18px] leading-[27px]">{rec.action_text}</p>
         <p className="text-[16px] leading-6 text-ink/80 mt-2">{rec.impact_text}</p>
         {rec.product_name && <p className="text-[13px] font-semibold text-slate mt-2">{rec.product_name}</p>}
       </div>
       {done ? (
-        <span className="chip bg-sage">{done}</span>
+        <span className={`chip ${done.startsWith("✓") ? "bg-sage" : "bg-linen"}`} role="status">
+          {done}
+        </span>
       ) : (
         <div className="flex items-center gap-3">
-          <button className="btn btn-primary" disabled={!!busy} onClick={() => act("approve")}>{busy === "approve" ? "Approving…" : "Approve"}</button>
-          <button className="btn btn-ghost" disabled={!!busy} onClick={() => act("dismiss")}>Dismiss</button>
+          <button className="btn btn-primary" disabled={!!busy} onClick={() => act("approve")}>
+            {busy === "approve" ? "Approving…" : "Approve"}
+          </button>
+          <button className="btn btn-ghost" disabled={!!busy} onClick={() => act("dismiss")}>
+            {busy === "dismiss" ? "Dismissing…" : "Dismiss"}
+          </button>
         </div>
       )}
     </div>

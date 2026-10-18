@@ -1,9 +1,26 @@
 """Alert rule evaluation after runs, plus delivery to linked channels.
 
-Rules live in ``alert_rules`` per product; when none are configured the
-defaults below apply. Every alert carries a dedupe_key so repeat conditions
-across runs do not spam the user. Delivery is a no-op until Telegram is
-configured, but alerts are always persisted for the dashboard and API.
+Rules live in ``alert_rules`` per product. The defaults below apply only while
+a product has no rule rows at all, so disabling every rule really silences it.
+
+Kinds:
+  oos_any           seller out of stock at any selected pin
+  oos_area          seller out of stock at pins in ``rule_json.pincodes`` or
+                    whose area/city matches ``rule_json.areas``
+  price_change_pct  a price change event above the threshold (last 24h)
+  price_gap_pct     seller priced above the cheapest in-stock rival
+  rating_below      seller rating under the threshold (``rating_drop`` alias)
+  rival_oos         a rival out of stock — a chance to capture the shelf
+  custom            keyword fallback: the rule text is parsed with the
+                    deterministic plain-English parser and, when it maps to a
+                    concrete kind, evaluated as that kind (alerts keep kind
+                    "custom" and quote the rule); otherwise it never fires.
+
+Every alert carries a dedupe_key. Condition alerts include the day, so a
+persisting problem alerts at most once a day; price-change alerts are keyed
+by their change event, so every new move alerts again. Delivery respects the
+user's Telegram channel switch and defers alerts raised during quiet hours
+until ``deliver_deferred_alerts`` runs after the quiet window.
 """
 
 from __future__ import annotations
@@ -12,30 +29,37 @@ import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db import SessionLocal
 from ..models.base import utcnow
-from ..models.checks import ChangeEvent
+from ..models.checks import ChangeEvent, CheckResult
 from ..models.intelligence import Alert, AlertRule
 from ..models.product import Pincode, Product
 from ..models.telegram import TelegramLink
 from ..models.user import User, UserSettings
+from .ai.fallback import FallbackAIProvider
+from .heatmap import selected_pairs
 from .insights import _latest_rival_rows, _latest_seller_rows
 
 logger = logging.getLogger("shelfsense.alerts")
 
 ALERT_KINDS = (
     "oos_any",
+    "oos_area",
     "price_change_pct",
     "rating_below",
+    "rating_drop",
     "price_gap_pct",
     "rival_oos",
     "custom",
 )
+KIND_ALIASES = {"rating_drop": "rating_below"}
 DEFAULT_RATING_THRESHOLD = 4.0
 DEFAULT_GAP_THRESHOLD_PCT = 5.0
 ALERT_MESSAGE_LIMIT = 2000
+DEFERRED_ALERT_WINDOW = timedelta(hours=24)
 
 
 def default_alert_rules(product: Product) -> list[dict]:
@@ -62,34 +86,283 @@ def default_alert_rules(product: Product) -> list[dict]:
 async def effective_rules(
     session: AsyncSession, product: Product
 ) -> list[AlertRule | dict]:
+    """Active stored rules; defaults only when the product has no rule rows."""
     stored = list(
         (
             await session.scalars(
-                select(AlertRule).where(
-                    AlertRule.product_id == product.id, AlertRule.active.is_(True)
-                )
+                select(AlertRule).where(AlertRule.product_id == product.id)
             )
         ).all()
     )
-    if stored:
-        return stored
-    return default_alert_rules(product)
+    if not stored:
+        return default_alert_rules(product)
+    return [rule for rule in stored if rule.active]
+
+
+def _rule_field(rule: AlertRule | dict, name: str, default=None):
+    if isinstance(rule, dict):
+        return rule.get(name, default)
+    value = getattr(rule, name, default)
+    return default if value is None else value
 
 
 def _rule_threshold(rule: AlertRule | dict, default: float | None) -> float | None:
-    threshold = getattr(rule, "threshold", None)
-    if threshold is None and isinstance(rule, dict):
-        threshold = rule.get("threshold")
+    threshold = _rule_field(rule, "threshold")
     return float(threshold) if threshold is not None else default
 
 
-async def _areas_for(session: AsyncSession, codes: set[str]) -> dict[str, str]:
-    if not codes:
-        return {}
-    rows = list(
-        (await session.scalars(select(Pincode).where(Pincode.code.in_(codes)))).all()
+def _matches_area(area: str, city: str, wanted: str) -> bool:
+    wanted = wanted.strip().lower()
+    if not wanted:
+        return False
+    names = (area.lower(), city.lower())
+    return any(wanted == name or wanted in name or name in wanted for name in names)
+
+
+async def resolve_rule_pincodes(session: AsyncSession, areas: list[str]) -> list[str]:
+    """Pincodes whose area or city matches any of the named areas."""
+    if not areas:
+        return []
+    rows = (await session.scalars(select(Pincode))).all()
+    return sorted(
+        row.code
+        for row in rows
+        if any(_matches_area(row.area_name, row.city, wanted) for wanted in areas)
     )
-    return {row.code: row.area_name for row in rows}
+
+
+class _Evaluation:
+    """Latest data for one product, shared by every rule evaluator."""
+
+    def __init__(
+        self,
+        product: Product,
+        now: datetime,
+        seller_latest: dict[tuple, CheckResult],
+        rival_latest: dict[tuple, CheckResult],
+        places: dict[str, tuple[str, str]],
+    ) -> None:
+        self.product = product
+        self.now = now
+        self.day = now.date().isoformat()
+        self.seller_latest = seller_latest
+        self.rival_latest = rival_latest
+        self.places = places
+        self.cheapest_rival: dict[tuple[str, str], float] = {}
+        for (_competitor_id, platform, pincode), row in rival_latest.items():
+            if row.status != "ok" or row.in_stock is not True or row.price is None:
+                continue
+            current = self.cheapest_rival.get((platform, pincode))
+            if current is None or row.price < current:
+                self.cheapest_rival[(platform, pincode)] = row.price
+
+    def area(self, pincode: str) -> str:
+        place = self.places.get(pincode)
+        return place[0] if place else pincode
+
+
+def _candidate(kind: str, message: str, evidence: dict, dedupe_key: str) -> dict:
+    return {
+        "kind": kind,
+        "message": message[:ALERT_MESSAGE_LIMIT],
+        "evidence": evidence,
+        "dedupe_key": dedupe_key[:500],
+    }
+
+
+def _oos_candidates(ev: _Evaluation, kind: str, pins: set[str] | None, rule_key: str):
+    product = ev.product
+    for (platform, pincode), row in ev.seller_latest.items():
+        if row.in_stock is not False or (pins is not None and pincode not in pins):
+            continue
+        yield _candidate(
+            kind,
+            f"{product.name} is out of stock in {ev.area(pincode)} ({pincode}) "
+            f"on {platform}.",
+            {"platform": platform, "pincode": pincode, "price": row.price},
+            f"{rule_key}:{product.id}:{platform}:{pincode}:{ev.day}",
+        )
+
+
+def _area_pins(ev: _Evaluation, rule: AlertRule | dict) -> set[str]:
+    rule_json = _rule_field(rule, "rule_json", {}) or {}
+    pins = {str(code) for code in rule_json.get("pincodes") or []}
+    areas = [str(area) for area in rule_json.get("areas") or []]
+    for code, (area, city) in ev.places.items():
+        if any(_matches_area(area, city, wanted) for wanted in areas):
+            pins.add(code)
+    return pins
+
+
+async def _price_change_candidates(
+    session: AsyncSession, ev: _Evaluation, threshold: float
+) -> list[dict]:
+    product = ev.product
+    events = (
+        await session.scalars(
+            select(ChangeEvent)
+            .where(
+                ChangeEvent.product_id == product.id,
+                ChangeEvent.kind.in_(("price_rise", "price_drop")),
+                ChangeEvent.detected_at >= ev.now - timedelta(hours=24),
+            )
+            .order_by(ChangeEvent.detected_at.desc())
+        )
+    ).all()
+    candidates: list[dict] = []
+    for event in events:
+        if event.old_value in (None, 0) or event.new_value is None:
+            continue
+        pct = abs(event.new_value - event.old_value) / event.old_value * 100
+        if pct < threshold:
+            continue
+        direction = "up" if event.new_value > event.old_value else "down"
+        candidates.append(
+            _candidate(
+                "price_change_pct",
+                f"{product.name} price is {direction} {pct:.1f}% on "
+                f"{event.platform}/{event.pincode} "
+                f"(₹{event.old_value:.2f} → ₹{event.new_value:.2f}).",
+                {
+                    "platform": event.platform,
+                    "pincode": event.pincode,
+                    "old_value": event.old_value,
+                    "new_value": event.new_value,
+                    "pct": round(pct, 2),
+                },
+                f"price_change:{product.id}:{event.id}",
+            )
+        )
+    return candidates
+
+
+def _rating_candidates(ev: _Evaluation, threshold: float) -> list[dict]:
+    product = ev.product
+    candidates: list[dict] = []
+    for (platform, pincode), row in ev.seller_latest.items():
+        if row.rating is None or row.rating >= threshold:
+            continue
+        candidates.append(
+            _candidate(
+                "rating_below",
+                f"{product.name} rating {row.rating:.1f} is below {threshold:.1f} "
+                f"in {ev.area(pincode)} ({pincode}) on {platform}.",
+                {
+                    "platform": platform,
+                    "pincode": pincode,
+                    "rating": row.rating,
+                    "threshold": threshold,
+                },
+                f"rating:{product.id}:{platform}:{pincode}:"
+                f"{round(float(row.rating), 2)}:{ev.day}",
+            )
+        )
+    return candidates
+
+
+def _gap_candidates(ev: _Evaluation, threshold: float) -> list[dict]:
+    product = ev.product
+    candidates: list[dict] = []
+    for (platform, pincode), row in ev.seller_latest.items():
+        if row.price is None or row.status != "ok":
+            continue
+        rival_price = ev.cheapest_rival.get((platform, pincode))
+        if not rival_price:
+            continue
+        gap = (row.price / rival_price - 1) * 100
+        if gap < threshold:
+            continue
+        candidates.append(
+            _candidate(
+                "price_gap_pct",
+                f"{product.name} on {platform} in {ev.area(pincode)} is priced "
+                f"{gap:.1f}% above the rival "
+                f"(₹{row.price:.2f} vs ₹{rival_price:.2f}).",
+                {
+                    "platform": platform,
+                    "pincode": pincode,
+                    "price": row.price,
+                    "rival_price": rival_price,
+                    "gap_pct": round(gap, 2),
+                },
+                f"price_gap:{product.id}:{platform}:{pincode}:"
+                f"{round(row.price, 2)}:{round(rival_price, 2)}:{ev.day}",
+            )
+        )
+    return candidates
+
+
+def _rival_oos_candidates(ev: _Evaluation) -> list[dict]:
+    product = ev.product
+    candidates: list[dict] = []
+    for (competitor_id, platform, pincode), row in ev.rival_latest.items():
+        if row.in_stock is not False:
+            continue
+        candidates.append(
+            _candidate(
+                "rival_oos",
+                f"A competitor is out of stock for {product.name} in "
+                f"{ev.area(pincode)} ({pincode}) on {platform} — chance to capture "
+                "the shelf.",
+                {"competitor_id": competitor_id, "platform": platform, "pincode": pincode},
+                f"rival_oos:{product.id}:{competitor_id}:{platform}:{pincode}:{ev.day}",
+            )
+        )
+    return candidates
+
+
+async def _rule_candidates(
+    session: AsyncSession, ev: _Evaluation, rule: AlertRule | dict
+) -> list[dict]:
+    kind = KIND_ALIASES.get(_rule_field(rule, "kind"), _rule_field(rule, "kind"))
+    rule_id = rule.id if isinstance(rule, AlertRule) else None
+    if kind == "oos_any":
+        return list(_oos_candidates(ev, "oos_any", None, "oos"))
+    if kind == "oos_area":
+        return list(
+            _oos_candidates(ev, "oos_area", _area_pins(ev, rule), f"oos_area:{rule_id}")
+        )
+    if kind == "price_change_pct":
+        threshold = _rule_threshold(rule, ev.product.max_change_pct) or 0.0
+        return await _price_change_candidates(session, ev, threshold)
+    if kind == "rating_below":
+        return _rating_candidates(ev, _rule_threshold(rule, DEFAULT_RATING_THRESHOLD) or 0.0)
+    if kind == "price_gap_pct":
+        return _gap_candidates(ev, _rule_threshold(rule, DEFAULT_GAP_THRESHOLD_PCT) or 0.0)
+    if kind == "rival_oos":
+        return _rival_oos_candidates(ev)
+    if kind == "custom":
+        return await _custom_candidates(session, ev, rule, rule_id)
+    return []
+
+
+async def _custom_candidates(
+    session: AsyncSession, ev: _Evaluation, rule: AlertRule | dict, rule_id: str | None
+) -> list[dict]:
+    text = (_rule_field(rule, "rule_text") or "").strip()
+    if not text:
+        return []
+    parsed = await FallbackAIProvider().parse_alert_rule(text)
+    if parsed.kind == "custom":
+        return []
+    derived = {
+        "kind": parsed.kind,
+        "threshold": _rule_field(rule, "threshold", parsed.threshold),
+        "rule_json": {**parsed.rule_json, **(_rule_field(rule, "rule_json", {}) or {})},
+    }
+    quoted = text if len(text) <= 80 else text[:79] + "…"
+    return [
+        {
+            **candidate,
+            "kind": "custom",
+            "message": f"Custom rule “{quoted}”: {candidate['message']}"[
+                :ALERT_MESSAGE_LIMIT
+            ],
+            "evidence": {**candidate["evidence"], "rule_text": text},
+            "dedupe_key": f"custom:{rule_id}:{candidate['dedupe_key']}"[:500],
+        }
+        for candidate in await _rule_candidates(session, ev, derived)
+    ]
 
 
 async def evaluate_alerts(
@@ -102,187 +375,31 @@ async def evaluate_alerts(
     """Evaluate rules against the latest data and persist unseen alerts."""
     now = now if now is not None else utcnow()
     rules = await effective_rules(session, product)
-    seller_latest = await _latest_seller_rows(session, product.id)
-    rival_latest = await _latest_rival_rows(session, product.id)
-
-    cheapest_rival: dict[tuple[str, str], float] = {}
-    for (competitor_id, platform, pincode), row in rival_latest.items():
-        del competitor_id
-        if row.status != "ok" or row.in_stock is not True or row.price is None:
-            continue
-        key = (platform, pincode)
-        current = cheapest_rival.get(key)
-        if current is None or row.price < current:
-            cheapest_rival[key] = row.price
-
-    areas = await _areas_for(
-        session,
-        {pincode for (_platform, pincode) in seller_latest},
-    )
+    if not rules:
+        return []
+    pairs = await selected_pairs(session, product.id)
+    seller_latest = {
+        key: row
+        for key, row in (await _latest_seller_rows(session, product.id, now=now)).items()
+        if key[0] in pairs.get(key[1], ())
+    }
+    rival_latest = {
+        key: row
+        for key, row in (await _latest_rival_rows(session, product.id, now=now)).items()
+        if key[1] in pairs.get(key[2], ())
+    }
+    places = {
+        row.code: (row.area_name, row.city)
+        for row in (
+            await session.scalars(select(Pincode).where(Pincode.code.in_(pairs)))
+        ).all()
+    }
+    ev = _Evaluation(product, now, seller_latest, rival_latest, places)
 
     candidates: list[dict] = []
     for rule in rules:
-        kind = getattr(rule, "kind", None) or rule.get("kind")
-        active = getattr(rule, "active", True)
-        if isinstance(rule, dict):
-            active = rule.get("active", True)
-        if not active or kind not in ALERT_KINDS:
-            continue
-        if kind == "oos_any":
-            for (platform, pincode), row in seller_latest.items():
-                if row.in_stock is False:
-                    area = areas.get(pincode, pincode)
-                    candidates.append(
-                        {
-                            "kind": "oos_any",
-                            "message": (
-                                f"{product.name} is out of stock in {area} "
-                                f"({pincode}) on {platform}."
-                            )[:ALERT_MESSAGE_LIMIT],
-                            "evidence": {
-                                "platform": platform,
-                                "pincode": pincode,
-                                "price": row.price,
-                            },
-                            "dedupe_key": (
-                                f"oos:{product.id}:{platform}:{pincode}:"
-                                f"{now.date().isoformat()}"
-                            ),
-                        }
-                    )
-        elif kind == "price_change_pct":
-            threshold = _rule_threshold(rule, product.max_change_pct) or 0.0
-            events = list(
-                (
-                    await session.scalars(
-                        select(ChangeEvent)
-                        .where(
-                            ChangeEvent.product_id == product.id,
-                            ChangeEvent.kind.in_(("price_rise", "price_drop")),
-                            ChangeEvent.detected_at >= now - timedelta(hours=24),
-                        )
-                        .order_by(ChangeEvent.detected_at.desc())
-                    )
-                ).all()
-            )
-            for event in events:
-                if event.old_value in (None, 0) or event.new_value is None:
-                    continue
-                pct = abs(event.new_value - event.old_value) / event.old_value * 100
-                if pct < threshold:
-                    continue
-                direction = "up" if event.new_value > event.old_value else "down"
-                candidates.append(
-                    {
-                        "kind": "price_change_pct",
-                        "message": (
-                            f"{product.name} price is {direction} {pct:.1f}% on "
-                            f"{event.platform}/{event.pincode} "
-                            f"(₹{event.old_value:.2f} → ₹{event.new_value:.2f})."
-                        )[:ALERT_MESSAGE_LIMIT],
-                        "evidence": {
-                            "platform": event.platform,
-                            "pincode": event.pincode,
-                            "old_value": event.old_value,
-                            "new_value": event.new_value,
-                            "pct": round(pct, 2),
-                        },
-                        "dedupe_key": (
-                            f"price_change:{product.id}:{event.platform}:"
-                            f"{event.pincode}:{round(event.old_value, 2)}:"
-                            f"{round(event.new_value, 2)}"
-                        ),
-                    }
-                )
-        elif kind == "rating_below":
-            threshold = _rule_threshold(rule, DEFAULT_RATING_THRESHOLD) or 0.0
-            for (platform, pincode), row in seller_latest.items():
-                if row.rating is not None and row.rating < threshold:
-                    area = areas.get(pincode, pincode)
-                    candidates.append(
-                        {
-                            "kind": "rating_below",
-                            "message": (
-                                f"{product.name} rating {row.rating:.1f} is below "
-                                f"{threshold:.1f} in {area} ({pincode}) on {platform}."
-                            )[:ALERT_MESSAGE_LIMIT],
-                            "evidence": {
-                                "platform": platform,
-                                "pincode": pincode,
-                                "rating": row.rating,
-                                "threshold": threshold,
-                            },
-                            "dedupe_key": (
-                                f"rating:{product.id}:{platform}:{pincode}:"
-                                f"{round(float(row.rating), 2)}"
-                            ),
-                        }
-                    )
-        elif kind == "price_gap_pct":
-            threshold = _rule_threshold(rule, DEFAULT_GAP_THRESHOLD_PCT) or 0.0
-            for (platform, pincode), row in seller_latest.items():
-                if row.price is None or row.status != "ok":
-                    continue
-                rival_price = cheapest_rival.get((platform, pincode))
-                if rival_price is None or rival_price == 0:
-                    continue
-                gap = (row.price / rival_price - 1) * 100
-                if gap < threshold:
-                    continue
-                area = areas.get(pincode, pincode)
-                candidates.append(
-                    {
-                        "kind": "price_gap_pct",
-                        "message": (
-                            f"{product.name} on {platform} in {area} is priced "
-                            f"{gap:.1f}% above the rival "
-                            f"(₹{row.price:.2f} vs ₹{rival_price:.2f})."
-                        )[:ALERT_MESSAGE_LIMIT],
-                        "evidence": {
-                            "platform": platform,
-                            "pincode": pincode,
-                            "price": row.price,
-                            "rival_price": rival_price,
-                            "gap_pct": round(gap, 2),
-                        },
-                        "dedupe_key": (
-                            f"price_gap:{product.id}:{platform}:{pincode}:"
-                            f"{round(row.price, 2)}:{round(rival_price, 2)}"
-                        ),
-                    }
-                )
-
-        elif kind == "rival_oos":
-            for (competitor_id, platform, pincode), row in rival_latest.items():
-                if row.in_stock is not False:
-                    continue
-                area = areas.get(pincode, pincode)
-                candidates.append(
-                    {
-                        "kind": "rival_oos",
-                        "message": (
-                            f"A competitor is out of stock for {product.name} "
-                            f"in {area} ({pincode}) on {platform} — "
-                            "chance to capture the shelf."
-                        )[:ALERT_MESSAGE_LIMIT],
-                        "evidence": {
-                            "competitor_id": competitor_id,
-                            "platform": platform,
-                            "pincode": pincode,
-                        },
-                        "dedupe_key": (
-                            f"rival_oos:{product.id}:{competitor_id}:"
-                            f"{platform}:{pincode}:"
-                            f"{now.date().isoformat()}"
-                        ),
-                    }
-                )
-        elif kind == "custom":
-            # Custom rules carry structured conditions in rule_json; without
-            # them there is nothing deterministic to evaluate, so they are
-            # stored for the UI but do not fire automatically.
-            continue
-
+        if _rule_field(rule, "kind") in ALERT_KINDS:
+            candidates.extend(await _rule_candidates(session, ev, rule))
     if not candidates:
         return []
     keys = {candidate["dedupe_key"] for candidate in candidates}
@@ -341,13 +458,20 @@ def _within_quiet_hours(user_settings: UserSettings | None, now_local) -> bool:
     return current >= start_minutes or current < end_minutes
 
 
+def _telegram_allowed(user_settings: UserSettings | None) -> bool:
+    channels = user_settings.channels if user_settings is not None else None
+    return not isinstance(channels, dict) or channels.get("telegram", True) is not False
+
+
 async def deliver_alerts(
     session: AsyncSession, alerts: list[Alert]
 ) -> int:
-    """Push alerts to linked Telegram chats; respects quiet hours.
+    """Push alerts to linked Telegram chats; returns how many were delivered.
 
-    Returns the number of alerts delivered. Delivery is a no-op when the
-    bot is not running; alerts stay available via the dashboard and API.
+    Skipped entirely for users who switched the Telegram channel off. During
+    quiet hours alerts stay unsent and ``deliver_deferred_alerts`` picks them
+    up later. A chat only receives alerts raised after it was linked.
+    Delivery is a no-op when the bot is not running.
     """
     from .telegram import send_telegram_message  # local import avoids cycles
 
@@ -371,9 +495,7 @@ async def deliver_alerts(
         row.id: row
         for row in (
             await session.scalars(
-                select(User).where(
-                    User.id.in_({link.user_id for link in links})
-                )
+                select(User).where(User.id.in_({link.user_id for link in links}))
             )
         ).all()
     }
@@ -381,9 +503,7 @@ async def deliver_alerts(
         row.user_id: row
         for row in (
             await session.scalars(
-                select(UserSettings).where(
-                    UserSettings.user_id.in_(users.keys())
-                )
+                select(UserSettings).where(UserSettings.user_id.in_(users.keys()))
             )
         ).all()
     }
@@ -391,19 +511,45 @@ async def deliver_alerts(
         for link in links_by_product.get(alert.product_id, []):
             if link.alert_types and alert.kind not in link.alert_types:
                 continue
+            if alert.created_at < link.connected_at:
+                continue
             user = users.get(link.user_id)
             if user is None:
+                continue
+            user_settings = settings_rows.get(link.user_id)
+            if not _telegram_allowed(user_settings):
                 continue
             try:
                 local_now = datetime.now(ZoneInfo(user.timezone))
             except (ZoneInfoNotFoundError, ValueError):
                 local_now = datetime.now(UTC)
-            if _within_quiet_hours(settings_rows.get(link.user_id), local_now):
+            if _within_quiet_hours(user_settings, local_now):
                 continue
-            text = f"[ShelfSense] {alert.message}"
-            sent = await send_telegram_message(link.chat_id, text)
+            sent = await send_telegram_message(link.chat_id, f"[ShelfSense] {alert.message}")
             if sent:
                 alert.sent_telegram = True
                 delivered += 1
     await session.commit()
     return delivered
+
+
+async def deliver_deferred_alerts(now: datetime | None = None) -> int:
+    """Retry recent unsent alerts (e.g. raised during quiet hours)."""
+    now = now if now is not None else utcnow()
+    async with SessionLocal() as session:
+        pending = list(
+            (
+                await session.scalars(
+                    select(Alert)
+                    .where(
+                        Alert.sent_telegram.is_(False),
+                        Alert.created_at >= now - DEFERRED_ALERT_WINDOW,
+                        or_(
+                            Alert.product_id.in_(select(TelegramLink.product_id)),
+                        ),
+                    )
+                    .order_by(Alert.created_at)
+                )
+            ).all()
+        )
+        return await deliver_alerts(session, pending)

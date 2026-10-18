@@ -54,7 +54,7 @@ async def test_free_plan_enforces_product_limit() -> None:
             },
         )
     assert response.status_code == 422
-    assert "up to 3 products" in response.json()["detail"]
+    assert "up to 3 products" in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -110,4 +110,4 @@ async def test_pincode_selection_respects_free_plan_limit() -> None:
             },
         )
     assert response.status_code == 422
-    assert "up to 5 pincodes" in response.json()["detail"]
+    assert "up to 5 pincodes" in response.json()["error"]["message"]

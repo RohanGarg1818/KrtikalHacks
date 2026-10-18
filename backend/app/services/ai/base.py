@@ -10,7 +10,7 @@ import json
 import re
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AIProviderError(Exception):
@@ -37,6 +37,17 @@ class ReviewsOut(BaseModel):
     complaints: list[str] = Field(default_factory=list)
 
 
+# In-app destinations a chat action may link to; anything else is dropped.
+ACTION_PATH_RE = re.compile(
+    r"^/(dashboard|products(/[\w-]+(/(settings|telegram|heatmap))?)?|heatmap|help"
+    r"|settings|agents)(\?[^\s]*)?$"
+)
+
+
+def is_allowed_action_path(path: str) -> bool:
+    return bool(ACTION_PATH_RE.match(path)) and "//" not in path
+
+
 class ChatAction(BaseModel):
     label: str
     path: str
@@ -51,6 +62,11 @@ class ChatOut(BaseModel):
     reply: str
     actions: list[ChatAction] = Field(default_factory=list)
     evidence: list[ChatEvidence] = Field(default_factory=list)
+
+    @field_validator("actions")
+    @classmethod
+    def drop_unknown_paths(cls, actions: list[ChatAction]) -> list[ChatAction]:
+        return [action for action in actions if is_allowed_action_path(action.path)]
 
 
 class AlertRuleOut(BaseModel):
@@ -77,8 +93,8 @@ class AIProvider(Protocol):
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_PINCODE_RE = re.compile(r"\b1[1-9]\d{4}\b")
-_RUPEE_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_PINCODE_RE = re.compile(r"\b[1-9]\d{5}\b")
+_RUPEE_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)\s*(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
 
 
 def parse_json_payload(text: str) -> dict:
@@ -103,11 +119,16 @@ def parse_json_payload(text: str) -> dict:
     return payload
 
 
-def grounding_violations(text: str, context: dict) -> list[str]:
+def grounding_violations(
+    text: str, context: dict, extra_prices: set[float] | None = None
+) -> list[str]:
     """Return violations when text mentions pincodes/prices absent from context.
 
     The brief requires rejecting model outputs that invent pincodes or prices;
     callers fall back to the rule-based provider when this list is non-empty.
+    When the context carries no prices at all, any rupee amount is invented.
+    ``extra_prices`` are additionally allowed (structured price proposals,
+    which the recommendation guardrails validate separately).
     """
     allowed_pins = {str(pin) for pin in context.get("all_pins", [])}
     allowed_pins.update(str(pin) for pin in context.get("oos_pins", []))
@@ -129,6 +150,11 @@ def grounding_violations(text: str, context: dict) -> list[str]:
             value = change.get(field)
             if isinstance(value, (int, float)):
                 allowed_prices.add(round(float(value), 2))
+    pricing = context.get("pricing") or {}
+    for key in ("floor_price", "cost_price"):
+        if isinstance(pricing.get(key), (int, float)):
+            allowed_prices.add(round(float(pricing[key]), 2))
+    allowed_prices.update(round(price, 2) for price in extra_prices or ())
     violations: list[str] = []
     for pin in _PINCODE_RE.findall(text):
         if allowed_pins and pin not in allowed_pins:
@@ -136,12 +162,22 @@ def grounding_violations(text: str, context: dict) -> list[str]:
         elif not allowed_pins:
             violations.append(f"pincode mentioned {pin} but none were provided")
     for raw in _RUPEE_PRICE_RE.findall(text):
-        price = round(float(raw), 2)
-        if allowed_prices and not any(
-            abs(price - known) < 0.011 for known in allowed_prices
-        ):
+        price = round(float(raw.replace(",", "")), 2)
+        if not any(abs(price - known) < 0.011 for known in allowed_prices):
             violations.append(f"unknown price {price}")
     return violations
+
+
+def proposed_prices(task: str, result: BaseModel) -> set[float]:
+    """Structured price proposals in a recommend result (validated by guardrails)."""
+    if task != "recommend":
+        return set()
+    prices: set[float] = set()
+    for item in result.recommendations:
+        value = item.evidence.get("proposed_price")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            prices.add(float(value))
+    return prices
 
 
 def result_text(task: str, result: BaseModel) -> str:

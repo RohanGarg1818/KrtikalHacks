@@ -5,7 +5,7 @@ from .chat import ChatConversation, ChatMessage
 from .checks import ChangeEvent, CheckResult, CheckRun, CreditLedger
 from .intelligence import AISummary, Alert, AlertRule, Recommendation, ReviewInsight
 from .product import Competitor, Pincode, Product, ProductListing, ProductPincode
-from .telegram import TelegramLink, TelegramLinkCode
+from .telegram import TelegramLink, TelegramLinkAttempt, TelegramLinkCode
 from .user import Subscription, User, UserSettings
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "ReviewInsight",
     "Subscription",
     "TelegramLink",
+    "TelegramLinkAttempt",
     "TelegramLinkCode",
     "User",
     "UserSettings",

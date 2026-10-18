@@ -3,6 +3,9 @@
 export type PinStatus = "in_stock" | "out_of_stock" | "price_gap" | "stale" | "not_tracked" | "failed";
 export type Priority = "high" | "medium" | "low";
 
+export type AuthMode = "dev" | "supabase";
+export type TinyFishMode = "live" | "simulated";
+
 export interface Health {
   status: string;
   database: string;
@@ -10,7 +13,15 @@ export interface Health {
   integrations: Record<string, boolean>;
   bot_running: boolean;
   scheduler_running: boolean;
+  auth_mode?: AuthMode;
+  tinyfish_mode?: TinyFishMode;
 }
+
+/** Body every API error returns. */
+export interface ApiErrorBody {
+  error: { code: string; message: string; fields?: ApiErrorField[] };
+}
+export interface ApiErrorField { loc: string; msg: string }
 
 export interface Me {
   profile: {
@@ -64,11 +75,20 @@ export interface Product {
   created_at: string;
 }
 
+export type ProductState = "ok" | "attention" | "paused" | "never_checked";
+
 export interface ProductCard extends Product {
+  /** Capped (≤ 12) for display; use the *_pairs counts for totals. */
   status_strip: { platform: string; pincode: string; status: string }[];
   price_position_vs_avg_rival: number | null;
   last_checked: string | null;
   telegram_connected: boolean;
+  total_pairs?: number;
+  ok_pairs?: number;
+  oos_pairs?: number;
+  gap_pairs?: number;
+  stale_pairs?: number;
+  state?: ProductState;
 }
 
 export interface Competitor {
@@ -122,6 +142,8 @@ export interface PinDetail {
       checked_at: string | null;
       run_id: string | null;
       screenshot_url: string | null;
+      /** CheckResult id, for `GET /check-results/{id}` (agent replay). */
+      result_id?: string | null;
     };
     rivals: {
       competitor_id: string;
@@ -133,6 +155,8 @@ export interface PinDetail {
       rating: number | null;
       status: string;
       checked_at: string | null;
+      result_id?: string | null;
+      run_id?: string | null;
     }[];
   }[];
 }
@@ -248,7 +272,15 @@ export interface TelegramStatus {
   }[];
 }
 
-export interface LinkCode { code: string; deep_link: string; expires_at: string; product_id: string }
+export interface LinkCode {
+  code: string;
+  /** `https://t.me/<bot>?start=<code>`, or null when the bot username is unknown. */
+  deep_link: string | null;
+  /** `/start <code>` to paste into the chat manually. */
+  command?: string;
+  expires_at: string;
+  product_id: string;
+}
 
 export interface UserSettings {
   briefing_time: string;
@@ -269,11 +301,13 @@ export interface Conversation { id: string; title: string; product_id: string | 
 export interface ConversationDetail { id: string; title: string; product_id: string | null; created_at: string; messages: ChatMessage[] }
 export interface HelpTopic { slug: string; title: string; body: string }
 
+export type RunStatus = "queued" | "running" | "done" | "partial" | "failed" | "cancelled" | string;
+
 export interface Run {
   id: string;
   product_id: string;
   trigger: string;
-  status: string;
+  status: RunStatus;
   total_jobs: number;
   done_jobs: number;
   failed_jobs: number;
@@ -281,3 +315,145 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
 }
+
+/** One row of `GET /runs/{id}` → `results`. */
+export interface RunResultRef {
+  id: string;
+  job_key: string;
+  platform: string;
+  pincode: string;
+  competitor_id: string | null;
+  status: string;
+  price: number | null;
+  in_stock: boolean | null;
+  screenshot_url: string | null;
+}
+
+/** `GET /runs/{id}`. */
+export interface RunDetail extends Run {
+  mode?: TinyFishMode;
+  results?: RunResultRef[];
+}
+
+/** `GET /runs` list row. */
+export interface RunSummary extends Run {
+  product_name: string | null;
+  mode?: TinyFishMode;
+}
+
+// ---- TinyFish agent ------------------------------------------------------
+
+export type AgentStepKind =
+  | "session"
+  | "navigate"
+  | "location"
+  | "search"
+  | "open"
+  | "extract"
+  | "checkout"
+  | "screenshot"
+  | "done"
+  | "error";
+
+export interface AgentStep {
+  index: number;
+  kind: AgentStepKind | string;
+  label: string;
+  detail: string | null;
+  at: string;
+  ms: number;
+}
+
+export interface TruePrice {
+  item: number | null;
+  handling_fee: number | null;
+  delivery_fee: number | null;
+  offer: number | null;
+  final: number | null;
+}
+
+export interface AgentTrace {
+  session_id?: string | null;
+  goal?: string | null;
+  mode?: TinyFishMode;
+  steps?: AgentStep[];
+  true_price?: TruePrice | null;
+}
+
+/** `GET /check-results/{id}`. */
+export interface CheckResultDetail {
+  id: string;
+  run_id: string | null;
+  product_id: string;
+  competitor_id: string | null;
+  platform: string;
+  pincode: string;
+  in_stock: boolean | null;
+  price: number | null;
+  mrp: number | null;
+  eta_minutes: number | null;
+  rating: number | null;
+  status: string;
+  error: string | null;
+  screenshot_url: string | null;
+  checked_at: string;
+  agent: AgentTrace | null;
+}
+
+/** `GET /tinyfish/usage`. */
+export interface TinyFishUsage {
+  mode: TinyFishMode;
+  concurrency: number;
+  credits_today: number;
+  /** null = unlimited */
+  daily_budget: number | null;
+  runs_today: number;
+  success_rate_7d: number | null;
+}
+
+export interface AgentJob {
+  platform: string;
+  pincode: string;
+  competitor_id: string | null;
+  competitor_name?: string | null;
+}
+
+/** Payload nested under a `result` event (job fields + check outcome). */
+export interface RunEventResult extends Partial<AgentJob> {
+  id?: string;
+  job_key?: string;
+  in_stock?: boolean | null;
+  price?: number | null;
+  mrp?: number | null;
+  eta_minutes?: number | null;
+  rating?: number | null;
+  status?: string;
+  screenshot_url?: string | null;
+  checked_at?: string;
+  ms?: number;
+  credits?: number;
+  true_price?: TruePrice | null;
+}
+
+/** Server-sent events on `/runs/{id}/stream`. */
+export type RunEvent =
+  | { type: "run_started"; run_id: string; total_jobs: number; mode?: TinyFishMode; concurrency?: number }
+  | { type: "job_started"; run_id: string; job_key: string; job: AgentJob; session_id?: string | null; goal?: string | null }
+  | { type: "agent_step"; run_id: string; job_key: string; step: AgentStep }
+  | {
+      type: "result";
+      run_id: string;
+      job_key?: string;
+      true_price?: TruePrice | null;
+      result?: RunEventResult;
+    }
+  | { type: "job_failed"; run_id: string; job_key?: string; job?: AgentJob; error?: string; ms?: number }
+  | {
+      type: "run_done";
+      run_id: string;
+      status: RunStatus;
+      total_jobs: number;
+      done_jobs: number;
+      failed_jobs: number;
+      credits_used?: number;
+    };

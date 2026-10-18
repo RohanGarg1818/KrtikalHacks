@@ -3,7 +3,8 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError, errorMessage } from "@/lib/api";
+import { toast } from "@/lib/toast";
 import type { Recommendation } from "@/lib/types";
 import { PriorityBadge } from "./ui";
 
@@ -26,20 +27,30 @@ export default function RecommendationCard({
   const [note, setNote] = useState<string | null>(null);
 
   async function act(kind: "approve" | "dismiss" | "send-telegram") {
+    if (busy) return;
     setBusy(kind);
     setNote(null);
     try {
-      const res = await api<{ status: string; sent_to_chats: number }>(`/recommendations/${rec.id}/${kind}`, {
+      const res = await api<{ status: string; sent_to_chats?: number }>(`/recommendations/${rec.id}/${kind}`, {
         method: "POST",
       });
       if (kind === "send-telegram") {
-        setNote(res.sent_to_chats ? `Sent to ${res.sent_to_chats} Telegram chat${res.sent_to_chats === 1 ? "" : "s"}` : "No Telegram chat linked to this product yet");
+        const n = res.sent_to_chats ?? 0;
+        setNote(n ? `Sent to ${n} Telegram chat${n === 1 ? "" : "s"}` : "No Telegram chat linked to this product yet");
+        if (n) toast("Sent to Telegram");
       } else {
         setStatus(res.status);
+        toast(res.status === "approved" ? "Recommendation approved" : "Recommendation dismissed");
         onChange?.();
       }
     } catch (e) {
-      setNote(e instanceof Error ? e.message : "Failed");
+      // 409 = someone already decided it (e.g. from Telegram): refresh instead of pretending.
+      if (e instanceof ApiError && e.status === 409) {
+        toast.info("This recommendation was already decided");
+        onChange?.();
+      } else {
+        toast.error(errorMessage(e, "Couldn't update the recommendation"));
+      }
     } finally {
       setBusy(null);
     }
@@ -47,7 +58,7 @@ export default function RecommendationCard({
 
   const decided = status !== "pending";
   return (
-    <div className={`card p-[26px] flex flex-col gap-5 transition-opacity ${decided ? "opacity-60" : ""}`}>
+    <div className={`card p-[26px] flex flex-col gap-5 transition-opacity ${decided ? "bg-linen border-dashed shadow-none" : ""}`}>
       <div className="flex flex-col gap-2 min-w-0">
         <div className="flex items-center gap-3 flex-wrap">
           <PriorityBadge priority={rec.priority} />
@@ -56,7 +67,7 @@ export default function RecommendationCard({
               {productName}
             </Link>
           )}
-          {decided && <span className="chip bg-sage ml-auto">{status === "approved" ? "✓ Approved" : "Dismissed"}</span>}
+          {decided && <span className={`chip ml-auto ${status === "approved" ? "bg-sage" : "bg-linen"}`}>{status === "approved" ? "✓ Approved" : "Dismissed"}</span>}
         </div>
         <p className="font-semibold text-[18px] leading-[27px]">{rec.action_text}</p>
         <p className="text-[16px] leading-6 text-ink/80">{rec.impact_text}</p>
@@ -67,7 +78,7 @@ export default function RecommendationCard({
             {busy === "approve" ? "Approving…" : "Approve"}
           </button>
           <button className="btn btn-ghost" disabled={!!busy} onClick={() => act("dismiss")}>
-            Dismiss
+            {busy === "dismiss" ? "Dismissing…" : "Dismiss"}
           </button>
           <button className="btn btn-sand px-[18px] text-[15px]" disabled={!!busy} onClick={() => act("send-telegram")}>
             <img src="/figma/heatmaps/imgContainer14.svg" alt="" width={16} height={13} />
@@ -75,7 +86,11 @@ export default function RecommendationCard({
           </button>
         </div>
       )}
-      {note && <p className="text-[14px] font-semibold border-t border-ink/20 pt-3">{note}</p>}
+      {note && (
+        <p className="text-[14px] font-semibold border-t border-ink/20 pt-3" role="status">
+          {note}
+        </p>
+      )}
     </div>
   );
 }

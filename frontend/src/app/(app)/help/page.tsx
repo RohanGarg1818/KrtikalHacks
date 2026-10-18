@@ -12,7 +12,13 @@ import type { ChatMessage, Conversation, ConversationDetail, HelpTopic, Me, Prod
 import { Skeleton } from "@/components/ui";
 import Reveal, { RevealItem } from "@/components/motion/Reveal";
 
-const SUPPORT_EMAIL = "support@shelfsense.app";
+const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@shelfsense.app";
+const SUPPORT_IS_DEMO = !process.env.NEXT_PUBLIC_SUPPORT_EMAIL;
+
+/** Assistant actions may only deep-link to known in-app routes (never external or protocol-relative URLs). */
+const SAFE_ACTION_PATH = /^\/(dashboard|products(\/[\w-]+(\/(settings|telegram|heatmap))?)?|heatmap|help|settings|agents)(\?[^#\s]*)?(#[\w-]*)?$/;
+const isSafeActionPath = (path: unknown): path is string =>
+  typeof path === "string" && path.startsWith("/") && !path.startsWith("//") && !path.includes("\\") && SAFE_ACTION_PATH.test(path);
 
 const SUGGESTED = [
   "Which pincodes are out of stock right now?",
@@ -238,7 +244,14 @@ export default function HelpPage() {
             </div>
 
             {/* Messages */}
-            <div ref={scroller} className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 flex flex-col gap-5">
+            <div
+              ref={scroller}
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-label="Conversation with the ShelfSense assistant"
+              className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 flex flex-col gap-5"
+            >
               {messages.length === 0 && !typing && (
                 <div className="m-auto text-center max-w-sm px-4">
                   <div className="mx-auto mb-4 grid place-items-center size-12 rounded-full border-2 border-ink bg-sand shadow-[3px_3px_0_var(--ink)]">
@@ -281,7 +294,7 @@ export default function HelpPage() {
                     exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.14 } }}
                   >
                     <Avatar />
-                    <div className="rounded-[16px] bg-sand px-5 py-[18px] dot-typing" aria-label="Typing">
+                    <div className="rounded-[16px] bg-sand px-5 py-[18px] dot-typing" role="status" aria-label="Assistant is typing">
                       <span /><span /><span />
                     </div>
                   </motion.div>
@@ -326,7 +339,7 @@ export default function HelpPage() {
           </div>
           <p className="px-2 text-[14px] leading-5 text-ink/80">
             AI answers use your latest check data. Need a human?{" "}
-            <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline decoration-2 underline-offset-2">Email support.</a>
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline decoration-2 underline-offset-2">Email support{SUPPORT_IS_DEMO ? " (demo address)" : ""}.</a>
           </p>
         </section>
 
@@ -428,7 +441,66 @@ export default function HelpPage() {
           )}
         </section>
       </div>
+
+      <Policies />
     </div>
+  );
+}
+
+const POLICIES: { id: string; title: string; points: string[] }[] = [
+  {
+    id: "terms",
+    title: "Terms",
+    points: [
+      "ShelfSense is a hackathon prototype provided as-is, with no uptime or accuracy guarantee.",
+      "Plans and upgrades run in test mode: no card is charged and no real payment is taken.",
+      "Prices, stock and recommendations are informational. You decide every price change; nothing is applied to your listings automatically.",
+    ],
+  },
+  {
+    id: "privacy",
+    title: "Privacy",
+    points: [
+      "We store what you enter (products, pincodes, rivals, alert rules) and the check results our agents collect, on the ShelfSense server.",
+      "Data isn't sold or shared. AI summaries send only aggregated check data for your products to the model provider when an API key is configured.",
+      "You can export everything (Settings → Export) and delete your account at any time.",
+    ],
+  },
+  {
+    id: "security",
+    title: "Security",
+    points: [
+      "TinyFish agents only read public product pages, the way a shopper would. They never log in to marketplaces with your credentials.",
+      "The checkout step only reads the final price — agents never place an order or enter payment details.",
+      "Evidence screenshots are tied to your account. In production they are served only to you, after an ownership check.",
+    ],
+  },
+];
+
+function Policies() {
+  return (
+    <section aria-labelledby="policies-title" className="mt-16 flex flex-col gap-6">
+      <div className="section-head">
+        <h2 id="policies-title" className="text-[28px] md:text-[32px] leading-8 font-semibold">
+          Terms, privacy &amp; security
+        </h2>
+      </div>
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        {POLICIES.map((p) => (
+          <article key={p.id} id={p.id} className="card p-[22px] scroll-mt-28 target:outline-[3px] target:outline-slate target:outline-offset-4">
+            <h3 className="text-[22px] leading-8 font-semibold">{p.title}</h3>
+            <ul className="mt-3 flex flex-col gap-2.5 text-[14px] leading-[22px] text-ink/85">
+              {p.points.map((t) => (
+                <li key={t} className="flex gap-2">
+                  <span aria-hidden className="mt-[7px] size-1.5 shrink-0 rounded-full bg-ink" />
+                  {t}
+                </li>
+              ))}
+            </ul>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -450,7 +522,7 @@ const chipIn = (j: number) => ({ animation: `rise 280ms cubic-bezier(0.22, 1, 0.
 /** Avatar + bubble + chips; the row wrapper (and its entrance) lives in the message list. */
 function AssistantMessage({ message, heatmapHref, live }: { message: ChatMessage; heatmapHref: (pin: string) => string; live: boolean }) {
   const pins = pincodesIn(message.content);
-  const actions = (message.actions ?? []).filter((a) => a.path && a.label);
+  const actions = (message.actions ?? []).filter((a) => isSafeActionPath(a.path) && typeof a.label === "string" && a.label.trim());
   return (
     <>
       <Avatar />

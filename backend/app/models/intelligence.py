@@ -10,9 +10,11 @@ from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 class AISummary(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "ai_summaries"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("check_runs.id"), nullable=True
+        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
     )
     summary_text: Mapped[str] = mapped_column(String(4000))
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -24,7 +26,9 @@ class AISummary(UUIDPrimaryKeyMixin, Base):
 
 class Recommendation(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "recommendations"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     priority: Mapped[str] = mapped_column(String(16))
     action_text: Mapped[str] = mapped_column(String(2000))
     impact_text: Mapped[str] = mapped_column(String(2000))
@@ -41,9 +45,11 @@ class Recommendation(UUIDPrimaryKeyMixin, Base):
 
 class ReviewInsight(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "review_insights"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     competitor_id: Mapped[str | None] = mapped_column(
-        ForeignKey("competitors.id"), nullable=True
+        ForeignKey("competitors.id", ondelete="CASCADE"), nullable=True
     )
     loves: Mapped[list] = mapped_column(JSON, default=list)
     complaints: Mapped[list] = mapped_column(JSON, default=list)
@@ -54,7 +60,9 @@ class ReviewInsight(UUIDPrimaryKeyMixin, Base):
 
 class AlertRule(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "alert_rules"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(32))
     threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
     rule_text: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -64,8 +72,12 @@ class AlertRule(UUIDPrimaryKeyMixin, Base):
 
 class Alert(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "alerts"
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(32))
     message: Mapped[str] = mapped_column(String(2000))
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -1,11 +1,14 @@
-"""User-scoped competitor management and deterministic mock discovery."""
+"""User-scoped competitor management and discovery."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from pydantic import ValidationError
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..deps import get_current_user
+from ..models.checks import ChangeEvent, CheckResult
+from ..models.intelligence import ReviewInsight
 from ..models.product import Competitor, Product
 from ..models.user import User
 from ..schemas.products import (
@@ -15,9 +18,13 @@ from ..schemas.products import (
     CompetitorResponse,
 )
 from ..services.competitor_discovery import discover_competitors
-from .products import get_owned_product
+from ..services.plans import competitor_limit
+from .products import get_owned_product, get_user_plan, has_active_run
 
 router = APIRouter(tags=["competitors"])
+
+NAME_LIMIT = 300
+QUERY_LIMIT = 500
 
 
 async def get_owned_competitor(
@@ -31,6 +38,19 @@ async def get_owned_competitor(
     if competitor is None:
         raise HTTPException(status_code=404, detail="Competitor not found")
     return competitor
+
+
+def as_suggestion(raw: dict) -> CompetitorCreate | None:
+    """Fit a discovery hit into the competitor schema, or drop it."""
+    try:
+        return CompetitorCreate(
+            name=str(raw.get("name") or "")[:NAME_LIMIT],
+            platform=raw.get("platform"),
+            url=raw.get("url"),
+            search_query=(str(raw["search_query"])[:QUERY_LIMIT] if raw.get("search_query") else None),
+        )
+    except ValidationError:
+        return None
 
 
 @router.get(
@@ -63,6 +83,21 @@ async def create_competitor(
     session: AsyncSession = Depends(get_session),
 ) -> Competitor:
     await get_owned_product(session, user.id, product_id)
+    plan = await get_user_plan(session, user.id)
+    limit = competitor_limit(plan)
+    existing = await session.scalar(
+        select(func.count())
+        .select_from(Competitor)
+        .where(Competitor.product_id == product_id)
+    )
+    if (existing or 0) >= limit:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "plan_limit_reached",
+                "message": f"The {plan} plan allows up to {limit} competitors per product",
+            },
+        )
     competitor = Competitor(product_id=product_id, **payload.model_dump())
     session.add(competitor)
     await session.commit()
@@ -77,6 +112,13 @@ async def delete_competitor(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     competitor = await get_owned_competitor(session, user.id, competitor_id)
+    if await has_active_run(session, competitor.product_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A check run is in progress for this product; try again when it finishes",
+        )
+    for model in (CheckResult, ChangeEvent, ReviewInsight):
+        await session.execute(delete(model).where(model.competitor_id == competitor_id))
     await session.delete(competitor)
     await session.commit()
 
@@ -93,10 +135,9 @@ async def discover(
 ) -> CompetitorDiscoveryResponse:
     product = await get_owned_product(session, user.id, product_id)
     query = payload.query if payload and payload.query else product.search_query
+    suggestions = [as_suggestion(item) for item in discover_competitors(query)]
     return CompetitorDiscoveryResponse(
-        suggestions=[
-            CompetitorCreate(**suggestion) for suggestion in discover_competitors(query)
-        ],
+        suggestions=[item for item in suggestions if item is not None],
         source="mock",
     )
 

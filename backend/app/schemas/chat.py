@@ -6,6 +6,11 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from .common import optional_text, required_text
+
+ConversationTitle = optional_text(300)
+MessageText = required_text(2000)
+
 
 class HelpTopic(BaseModel):
     slug: str
@@ -18,7 +23,7 @@ class HelpTopicListResponse(BaseModel):
 
 
 class ConversationCreate(BaseModel):
-    title: str | None = Field(default=None, max_length=300)
+    title: ConversationTitle = None
     product_id: str | None = None
 
 
@@ -51,11 +56,11 @@ class ConversationDetail(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=2000)
+    content: MessageText
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    message: MessageText
     conversation_id: str | None = None
     product_id: str | None = None
 

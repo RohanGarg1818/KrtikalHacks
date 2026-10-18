@@ -60,6 +60,18 @@ def _recommendation_payload(row: Recommendation) -> RecommendationResponse:
     )
 
 
+def ensure_pending(row: Recommendation) -> None:
+    """Only `pending` recommendations can be decided or sent out."""
+    if row.status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "invalid_transition",
+                "message": f"This recommendation is already {row.status}",
+            },
+        )
+
+
 async def get_owned_recommendation(
     session: AsyncSession, user: User, recommendation_id: str
 ) -> Recommendation:
@@ -99,7 +111,9 @@ async def post_generate_summary(
 )
 async def list_recommendations(
     product_id: str,
-    status: str | None = Query(default=None),
+    status: str | None = Query(
+        default=None, pattern="^(pending|approved|dismissed)$"
+    ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RecommendationListResponse:
@@ -159,6 +173,7 @@ async def approve_recommendation(
     session: AsyncSession = Depends(get_session),
 ) -> DecisionResponse:
     row = await get_owned_recommendation(session, user, recommendation_id)
+    ensure_pending(row)
     row = await decide_recommendation(session, row, decision="approved")
     return DecisionResponse(
         id=row.id,
@@ -178,6 +193,7 @@ async def dismiss_recommendation(
     session: AsyncSession = Depends(get_session),
 ) -> DecisionResponse:
     row = await get_owned_recommendation(session, user, recommendation_id)
+    ensure_pending(row)
     row = await decide_recommendation(session, row, decision="dismissed")
     return DecisionResponse(
         id=row.id,
@@ -200,6 +216,7 @@ async def send_recommendation_to_telegram(
     from ..services.telegram import send_recommendation_message
 
     row = await get_owned_recommendation(session, user, recommendation_id)
+    ensure_pending(row)
     product = await session.get(Product, row.product_id)
     links = list(
         (

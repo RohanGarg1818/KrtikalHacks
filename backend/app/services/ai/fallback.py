@@ -21,10 +21,62 @@ from .base import (
 
 _PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _BELOW_RE = re.compile(r"below\s+(\d+(?:\.\d+)?)")
+_PINCODE_RE = re.compile(r"^[1-9]\d{5}$")
+# "out of stock in South Delhi", "OOS at 110017 and 110016 on blinkit".
+_AREA_RE = re.compile(
+    r"(?:out[\s-]of[\s-]stock|stockouts?|oos)\s+(?:in|at|across|around|for)\s+"
+    r"(?P<areas>.+?)(?:\s+on\s+\w+)?\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_AREA_SPLIT_RE = re.compile(r"\s*(?:,|\band\b|&|/)\s*", re.IGNORECASE)
+_NOT_AN_AREA = {"any", "all", "every", "some", "a", "the"}
 
 
 def _fmt_money(value: float | None) -> str:
     return "n/a" if value is None else f"₹{value:.2f}"
+
+
+def guarded_price_target(context: dict) -> float | None:
+    """Rival-matching price clamped to the product's pricing rules.
+
+    None when the clamped price would not actually lower the current price.
+    """
+    current = context.get("avg_price")
+    rival = context.get("cheapest_rival")
+    if current is None or rival is None:
+        return None
+    pricing = context.get("pricing") or {}
+    bounds = [float(rival)]
+    if pricing.get("floor_price") is not None:
+        bounds.append(float(pricing["floor_price"]))
+    if pricing.get("cost_price") is not None and pricing.get("min_margin_pct") is not None:
+        bounds.append(
+            float(pricing["cost_price"]) * (1 + float(pricing["min_margin_pct"]) / 100)
+        )
+    if pricing.get("max_change_pct") is not None:
+        bounds.append(float(current) * (1 - float(pricing["max_change_pct"]) / 100))
+    target = round(max(bounds), 2)
+    return target if target < float(current) - 0.005 else None
+
+
+def parse_rule_areas(text: str) -> tuple[list[str], list[str]] | None:
+    """Areas and pincodes named after "out of stock in …", or None."""
+    match = _AREA_RE.search(text.strip())
+    if match is None:
+        return None
+    areas: list[str] = []
+    pincodes: list[str] = []
+    for part in _AREA_SPLIT_RE.split(match.group("areas")):
+        cleaned = part.strip(" .")
+        if not cleaned or cleaned.lower() in _NOT_AN_AREA:
+            continue
+        if _PINCODE_RE.match(cleaned):
+            pincodes.append(cleaned)
+        elif not cleaned.lower().startswith(("any ", "all ", "every ")):
+            areas.append(cleaned)
+    if not areas and not pincodes:
+        return None
+    return areas, pincodes
 
 
 def _gap_pct(context: dict) -> float | None:
@@ -99,21 +151,33 @@ class FallbackAIProvider:
             )
         gap = _gap_pct(context)
         if gap is not None and gap >= 5:
+            target = guarded_price_target(context)
+            rival_text = _fmt_money(context.get("cheapest_rival"))
+            if target is not None:
+                action = (
+                    f"Move your price to {_fmt_money(target)} (from "
+                    f"{_fmt_money(context.get('avg_price'))}); you are {gap}% above "
+                    f"the cheapest rival ({rival_text})."
+                )
+            else:
+                action = (
+                    f"Review pricing: your average is {gap}% above the cheapest "
+                    f"rival ({rival_text}), and your pricing rules leave no room "
+                    "to match it."
+                )
             candidates.append(
                 RecommendationCandidate(
                     priority="medium",
-                    action_text=(
-                        f"Review pricing: your average is {gap}% above the "
-                        f"cheapest rival ({_fmt_money(context.get('cheapest_rival'))})."
-                    ),
+                    action_text=action,
                     impact_text=(
-                        "Matching or selectively undercutting the rival price "
-                        "can lift conversion on price-sensitive pins."
+                        "Closing the gap within your floor and margin rules can "
+                        "lift conversion on price-sensitive pins."
                     ),
                     evidence={
                         "avg_price": context.get("avg_price"),
                         "cheapest_rival": context.get("cheapest_rival"),
                         "gap_pct": gap,
+                        "proposed_price": target,
                     },
                 )
             )
@@ -128,6 +192,19 @@ class FallbackAIProvider:
                     ),
                     impact_text="Improving ratings protects visibility in platform ranking.",
                     evidence={"rating": rating},
+                )
+            )
+        failed = context.get("failed_pins") or 0
+        if failed:
+            candidates.append(
+                RecommendationCandidate(
+                    priority="low",
+                    action_text=(
+                        f"{failed} check(s) failed on the latest run; re-run them "
+                        "to fill the gaps in the heatmap."
+                    ),
+                    impact_text="Failed checks leave those pins without fresh data.",
+                    evidence={"failed_pins": failed},
                 )
             )
         stale = context.get("stale_pins") or 0
@@ -286,12 +363,23 @@ class FallbackAIProvider:
 
     async def parse_alert_rule(self, text: str) -> AlertRuleOut:
         lowered = text.lower()
-        if any(word in lowered for word in ("out of stock", "stockout", "oos")):
+        if any(
+            word in lowered
+            for word in ("out of stock", "out-of-stock", "stockout", "oos")
+        ):
             if "rival" in lowered or "competitor" in lowered:
                 return AlertRuleOut(
                     kind="rival_oos",
                     rule_text=text,
                     rule_json={"trigger": "competitor out of stock"},
+                )
+            located = parse_rule_areas(text)
+            if located is not None:
+                areas, pincodes = located
+                return AlertRuleOut(
+                    kind="oos_area",
+                    rule_text=text,
+                    rule_json={"areas": areas, "pincodes": pincodes},
                 )
             return AlertRuleOut(
                 kind="oos_any", rule_text=text, rule_json={"trigger": "seller oos"}

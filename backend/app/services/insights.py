@@ -1,10 +1,15 @@
-"""KPI aggregation, sparklines, weekly comparisons, reviews, change detection."""
+"""KPI aggregation, sparklines, weekly comparisons, reviews, change detection.
+
+History reads are bounded to ``HISTORY_WINDOW`` and daily buckets follow the
+product owner's timezone.
+"""
 
 from __future__ import annotations
 
 import csv
 import io
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,13 +17,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.checks import ChangeEvent, CheckResult
 from ..models.intelligence import AISummary, Recommendation, ReviewInsight
 from ..models.product import Competitor, Product
-from .heatmap import mean, take_latest
+from ..models.user import User
+from .heatmap import HISTORY_WINDOW, mean, selected_pairs, take_latest
 
 PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
 PRICE_CHANGE_MIN = 1.0
 RATING_CHANGE_MIN = 0.1
 OVERVIEW_RECOMMENDATION_LIMIT = 5
 CHANGELOG_LIMIT = 100
+# Leading characters spreadsheet apps evaluate as formulas.
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: object) -> object:
+    """Neutralise spreadsheet formula injection in exported text cells."""
+    if isinstance(value, str) and value.startswith(CSV_FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
+
+
+async def product_timezone(session: AsyncSession, product_id: str) -> tzinfo:
+    """The owner's IANA timezone for day buckets; UTC when unknown or invalid."""
+    name = await session.scalar(
+        select(User.timezone)
+        .join(Product, Product.user_id == User.id)
+        .where(Product.id == product_id)
+    )
+    try:
+        return ZoneInfo(name) if name else UTC
+    except (ZoneInfoNotFoundError, ValueError):
+        return UTC
 
 
 def compare_results(old: CheckResult, new: CheckResult) -> list[dict]:
@@ -82,6 +110,7 @@ async def detect_changes(
                     CheckResult.run_id != run_id,
                     CheckResult.status == "ok",
                     CheckResult.checked_at < oldest,
+                    CheckResult.checked_at >= oldest - HISTORY_WINDOW,
                 )
                 .order_by(CheckResult.checked_at.desc())
             )
@@ -112,8 +141,12 @@ async def detect_changes(
     return events
 
 
+def _history_start(now: datetime | None) -> datetime:
+    return (now if now is not None else datetime.now(UTC)) - HISTORY_WINDOW
+
+
 async def _latest_seller_rows(
-    session: AsyncSession, product_id: str
+    session: AsyncSession, product_id: str, *, now: datetime | None = None
 ) -> dict[tuple, CheckResult]:
     rows = list(
         (
@@ -122,6 +155,7 @@ async def _latest_seller_rows(
                 .where(
                     CheckResult.product_id == product_id,
                     CheckResult.competitor_id.is_(None),
+                    CheckResult.checked_at >= _history_start(now),
                 )
                 .order_by(CheckResult.checked_at.desc())
             )
@@ -131,7 +165,7 @@ async def _latest_seller_rows(
 
 
 async def _latest_rival_rows(
-    session: AsyncSession, product_id: str
+    session: AsyncSession, product_id: str, *, now: datetime | None = None
 ) -> dict[tuple, CheckResult]:
     rows = list(
         (
@@ -140,6 +174,7 @@ async def _latest_rival_rows(
                 .where(
                     CheckResult.product_id == product_id,
                     CheckResult.competitor_id.is_not(None),
+                    CheckResult.checked_at >= _history_start(now),
                 )
                 .order_by(CheckResult.checked_at.desc())
             )
@@ -150,9 +185,9 @@ async def _latest_rival_rows(
     )
 
 
-def _day_list(start: datetime, end: datetime) -> list[str]:
-    first = start.date()
-    last = end.date()
+def _day_list(start: datetime, end: datetime, tz: tzinfo = UTC) -> list[str]:
+    first = start.astimezone(tz).date()
+    last = end.astimezone(tz).date()
     days: list[str] = []
     cursor = first
     while cursor <= last:
@@ -161,16 +196,34 @@ def _day_list(start: datetime, end: datetime) -> list[str]:
     return days
 
 
-def _iso_day(value: datetime) -> str:
-    return value.date().isoformat()
+def _iso_day(value: datetime, tz: tzinfo = UTC) -> str:
+    return value.astimezone(tz).date().isoformat()
+
+
+def local_days_start(now: datetime, days: int, tz: tzinfo) -> datetime:
+    """UTC instant of local midnight ``days`` days before ``now``'s local date."""
+    local = (now.astimezone(tz) - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return local.astimezone(UTC)
 
 
 async def compute_overview(
     session: AsyncSession, product_id: str, *, now: datetime | None = None
 ) -> dict:
     now = now if now is not None else datetime.now(UTC)
-    seller_latest = await _latest_seller_rows(session, product_id)
-    rival_latest = await _latest_rival_rows(session, product_id)
+    tz = await product_timezone(session, product_id)
+    pairs = await selected_pairs(session, product_id)
+    seller_latest = {
+        key: row
+        for key, row in (await _latest_seller_rows(session, product_id, now=now)).items()
+        if key[0] in pairs.get(key[1], ())
+    }
+    rival_latest = {
+        key: row
+        for key, row in (await _latest_rival_rows(session, product_id, now=now)).items()
+        if key[1] in pairs.get(key[2], ())
+    }
     seller_cells = list(seller_latest.values())
     seller_ok = [row for row in seller_cells if row.status == "ok"]
     rival_prices = [
@@ -179,10 +232,8 @@ async def compute_overview(
         if row.status == "ok" and row.in_stock is True and row.price is not None
     ]
 
-    spark_start = (now - timedelta(days=6)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    days = _day_list(spark_start, now)
+    spark_start = local_days_start(now, 6, tz)
+    days = _day_list(spark_start, now, tz)
     seller_window = list(
         (
             await session.scalars(
@@ -216,7 +267,9 @@ async def compute_overview(
     rating_series: list[float | None] = []
     rival_series: list[float | None] = []
     for day in days:
-        day_rows = [row for row in seller_window if _iso_day(row.checked_at) == day]
+        day_rows = [
+            row for row in seller_window if _iso_day(row.checked_at, tz) == day
+        ]
         price_series.append(
             mean([row.price for row in day_rows if row.price is not None])
         )
@@ -229,7 +282,7 @@ async def compute_overview(
         rival_day = [
             row.price
             for row in rival_window
-            if _iso_day(row.checked_at) == day
+            if _iso_day(row.checked_at, tz) == day
             and row.in_stock is True
             and row.price is not None
         ]
@@ -309,8 +362,8 @@ async def compute_competitor_rows(
     product = await session.get(Product, product_id)
     if product is None:
         return []
-    seller_latest = await _latest_seller_rows(session, product_id)
-    rival_latest = await _latest_rival_rows(session, product_id)
+    seller_latest = await _latest_seller_rows(session, product_id, now=now)
+    rival_latest = await _latest_rival_rows(session, product_id, now=now)
     names = {
         row.id: row.name
         for row in (
@@ -405,7 +458,8 @@ async def daily_entity_rows(
     seller_rows = list((await session.scalars(seller_statement)).all())
     rival_rows = list((await session.scalars(rival_statement)).all())
 
-    days = _day_list(start, now)
+    tz = await product_timezone(session, product_id)
+    days = _day_list(start, now, tz)
     entities: list[tuple[str | None, str, str, list[CheckResult]]] = [
         (
             None,
@@ -431,7 +485,7 @@ async def daily_entity_rows(
     output: list[dict] = []
     for entity_id, name, entity_platform, rows in entities:
         for day in days:
-            day_rows = [row for row in rows if _iso_day(row.checked_at) == day]
+            day_rows = [row for row in rows if _iso_day(row.checked_at, tz) == day]
             prices = [row.price for row in day_rows if row.price is not None]
             ratings = [row.rating for row in day_rows if row.rating is not None]
             output.append(
@@ -527,13 +581,12 @@ async def compute_weekly(
         row for row in rival_rows if this_start > row.checked_at >= last_start
     ]
 
-    series_start = (now - timedelta(days=6)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    tz = await product_timezone(session, product_id)
+    series_start = local_days_start(now, 6, tz)
     daily = await daily_entity_rows(
         session, product_id, platform=platform, start=series_start, now=now
     )
-    days = _day_list(series_start, now)
+    days = _day_list(series_start, now, tz)
     by_entity: dict[tuple, dict] = {}
     order: list[tuple] = []
     for row in daily:
@@ -613,8 +666,8 @@ def build_weekly_csv(daily_rows: list[dict], this_week_start: datetime) -> str:
             [
                 row["date"],
                 "this_week" if date_value >= cutoff else "last_week",
-                row["name"],
-                row["platform"],
+                csv_safe(row["name"]),
+                csv_safe(row["platform"]),
                 row["avg_price"] if row["avg_price"] is not None else "",
                 row["checks"],
                 row["in_stock"],

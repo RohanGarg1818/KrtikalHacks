@@ -10,7 +10,9 @@ from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
 
 class Product(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "products"
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(300))
     brand: Mapped[str | None] = mapped_column(String(200), nullable=True)
     search_query: Mapped[str] = mapped_column(String(500))
@@ -30,14 +32,18 @@ class Product(UUIDPrimaryKeyMixin, Base):
 
 class ProductListing(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "product_listings"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     platform: Mapped[str] = mapped_column(String(32))
     url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
 
 class Competitor(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "competitors"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(300))
     platform: Mapped[str] = mapped_column(String(32))
     url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -56,6 +62,8 @@ class Pincode(Base):
 
 class ProductPincode(Base):
     __tablename__ = "product_pincodes"
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), primary_key=True
+    )
     pincode: Mapped[str] = mapped_column(ForeignKey("pincodes.code"), primary_key=True)
     platform: Mapped[str] = mapped_column(String(32), primary_key=True)

@@ -22,15 +22,21 @@ const POP_RANK: Record<string, number> = { in_stock: 0, stale: 1, not_tracked: 1
 const POP_STEP = 35;
 const POP_TOTAL = 1400;
 
+const HTML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" };
+/** divIcon markup is raw HTML: every API-derived string must be escaped. */
+const escapeHtml = (v: unknown) => String(v ?? "").replace(/[&<>"'`]/g, (c) => HTML_ESCAPES[c]);
+
 function pinHtml(p: HeatmapPin, showRival: boolean, anim: string) {
   const m = STATUS_META[p.status] ?? STATUS_META.stale;
-  const inner = ICON_HTML[p.status] ?? m.icon;
+  const inner = ICON_HTML[p.status] ?? escapeHtml(m.icon);
+  const pincode = escapeHtml(p.pincode);
+  const label = escapeHtml(m.label);
   const rival = showRival
-    ? `<div class="absolute left-1/2 top-[42px] -translate-x-1/2 whitespace-nowrap rounded-md border-2 border-ink bg-linen px-1.5 text-[11px] font-semibold leading-[18px] text-ink shadow-[2px_2px_0_var(--ink)]">${rupees(p.price)} · R ${rupees(p.rival_price)}</div>`
+    ? `<div class="absolute left-1/2 top-[42px] -translate-x-1/2 whitespace-nowrap rounded-md border-2 border-ink bg-linen px-1.5 text-[11px] font-semibold leading-[18px] text-ink shadow-[2px_2px_0_var(--ink)]">${escapeHtml(rupees(p.price))} · R ${escapeHtml(rupees(p.rival_price))}</div>`
     : "";
   // data-pin wraps everything (dimmed via opacity); data-hl wraps only the pin (scaled on highlight).
   // The pop-in stays on .ss-pin itself (shared pin-pop keyframes) — only its delay is set here.
-  return `<div class="relative" data-pin="${p.pincode}" style="transition:opacity 200ms ease" title="${p.pincode} · ${p.area ?? ""} — ${m.label}"><div data-hl style="transition:transform 220ms cubic-bezier(.22,1,.36,1)"><div class="ss-pin ${p.status}" style="width:36px;height:36px;${anim}" aria-label="${m.label}">${inner}</div></div>${rival}</div>`;
+  return `<div class="relative" data-pin="${pincode}" style="transition:opacity 200ms ease" title="${pincode} · ${escapeHtml(p.area)} — ${label}"><div data-hl style="transition:transform 220ms cubic-bezier(.22,1,.36,1)"><div class="ss-pin ${escapeHtml(p.status.replace(/[^a-z_]/g, ""))}" style="width:36px;height:36px;${anim}" role="img" aria-label="${pincode}${p.area ? ` ${escapeHtml(p.area)}` : ""}: ${label}">${inner}</div></div>${rival}</div>`;
 }
 
 interface PinEntry {

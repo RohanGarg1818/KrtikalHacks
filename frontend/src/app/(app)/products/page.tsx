@@ -4,10 +4,10 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useApi } from "@/lib/api";
-import type { Plans, ProductCard } from "@/lib/types";
+import type { Me, Plans } from "@/lib/types";
 import AddProductDialog from "@/components/AddProductDialog";
 import { CardSkeleton, Empty, ErrorCard, Skeleton, Sticker } from "@/components/ui";
-import { ProductGridCard, ProductTable, coverage, platformsOf, productState } from "@/components/products/ProductViews";
+import { ProductGridCard, ProductTable, coverage, platformsOf, productState, type Card, type CardState } from "@/components/products/ProductViews";
 
 const A = "/figma/product";
 const PAGE_SIZE = 8;
@@ -17,6 +17,7 @@ const FILTERS = [
   { key: "attention", label: "Needs attention" },
   { key: "healthy", label: "Healthy" },
   { key: "paused", label: "Paused" },
+  { key: "new", label: "Not checked yet" },
 ] as const;
 type FilterKey = (typeof FILTERS)[number]["key"];
 
@@ -28,12 +29,18 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "price", label: "Sort: Most expensive vs rivals" },
   { key: "checked", label: "Sort: Recently checked" },
 ];
-const STATE_RANK = { attention: 0, healthy: 1, paused: 2 };
+const STATE_RANK: Record<CardState, number> = { attention: 0, new: 1, healthy: 2, paused: 3 };
 
-function countBy(list: ProductCard[]) {
-  const c = { "": list.length, attention: 0, healthy: 0, paused: 0 };
+function countBy(list: Card[]) {
+  const c: Record<FilterKey, number> = { "": list.length, attention: 0, healthy: 0, paused: 0, new: 0 };
   for (const p of list) c[productState(p)]++;
   return c;
+}
+
+/** Client-side search over the one `/products` response (name, brand, search query). */
+function matches(p: Card, term: string) {
+  const t = term.toLowerCase();
+  return [p.name, p.brand, p.search_query].some((v) => v?.toLowerCase().includes(t));
 }
 
 export default function ProductsPage() {
@@ -62,25 +69,24 @@ function ProductsView() {
   useEffect(() => setPage(0), [filter, q, sort]);
 
   const term = q.trim();
-  const params = new URLSearchParams();
-  if (filter) params.set("filter", filter);
-  if (term) params.set("q", term);
-  const qs = params.toString();
 
-  const all = useApi<ProductCard[]>("/products");
-  const searched = useApi<ProductCard[]>(term ? `/products?q=${encodeURIComponent(term)}` : "/products", { keepPreviousData: true });
-  const { data, error, mutate } = useApi<ProductCard[]>(`/products${qs ? `?${qs}` : ""}`, { keepPreviousData: true });
+  // One request: filtering, search and counts are all derived from it.
+  const { data, error, mutate } = useApi<Card[]>("/products");
+  const me = useApi<Me>("/me");
   const plans = useApi<Plans>("/plans");
 
-  const everything = all.data ?? [];
+  const everything = useMemo(() => data ?? [], [data]);
+  const searched = useMemo(() => (term ? everything.filter((p) => matches(p, term)) : everything), [everything, term]);
+  const filtered = useMemo(() => (filter ? searched.filter((p) => productState(p) === filter) : searched), [searched, filter]);
   const totals = countBy(everything);
-  const counts = countBy(searched.data ?? []);
+  const counts = countBy(searched);
   const platformCount = new Set(everything.flatMap(platformsOf)).size;
-  const pincodeCount = new Set(everything.flatMap((p) => p.status_strip.map((s) => s.pincode))).size;
-  const planLimit = plans.data?.plans.find((p) => p.plan === plans.data?.current)?.pincodes;
+  const planName = me.data?.plan ?? plans.data?.current;
+  const planLimit = plans.data?.plans.find((p) => p.plan === planName)?.pincodes;
+  const visibleFilters = FILTERS.filter((f) => f.key !== "new" || totals.new > 0 || filter === "new");
 
   const rows = useMemo(() => {
-    const list = [...(data ?? [])];
+    const list = [...filtered];
     list.sort((a, b) => {
       if (sort === "attention") return STATE_RANK[productState(a)] - STATE_RANK[productState(b)] || coverage(a).ratio - coverage(b).ratio || a.name.localeCompare(b.name);
       if (sort === "coverage") return coverage(a).ratio - coverage(b).ratio;
@@ -89,16 +95,15 @@ function ProductsView() {
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [data, sort]);
+  }, [filtered, sort]);
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const current = Math.min(page, pages - 1);
   const shown = rows.slice(current * PAGE_SIZE, current * PAGE_SIZE + PAGE_SIZE);
 
   function refresh() {
-    all.mutate();
-    searched.mutate();
-    mutate();
+    void mutate();
+    void me.mutate();
   }
 
   function clearSearch() {
@@ -113,7 +118,7 @@ function ProductsView() {
         <div className="flex flex-col gap-2">
           <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] tracking-[-1.4px]">Products</h1>
           <p className="text-[16px] leading-[22px]">
-            {all.data
+            {data
               ? `${totals[""]} product${totals[""] === 1 ? "" : "s"} tracked across ${platformCount} platform${platformCount === 1 ? "" : "s"}.`
               : "Loading your catalogue…"}
           </p>
@@ -131,21 +136,21 @@ function ProductsView() {
 
       {/* Summary tiles */}
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-        <Tile tone="bg-sage text-ink" eyebrow="Healthy" value={all.data ? totals.healthy : null} caption="Stock and price on track" />
-        <Tile tone="bg-sand text-ink" eyebrow="Need attention" value={all.data ? totals.attention : null} caption="Out of stock or price gap" />
+        <Tile tone="bg-sage text-ink" eyebrow="Healthy" value={data ? totals.healthy : null} caption="Stock and price on track" />
+        <Tile tone="bg-sand text-ink" eyebrow="Need attention" value={data ? totals.attention : null} caption="Out of stock or price gap" />
         <Tile
           tone="bg-slate text-linen"
           muted="text-linen/90"
           eyebrow="Tracked pincodes"
-          value={all.data ? pincodeCount : null}
-          caption={plans.data ? (planLimit != null ? `Of ${planLimit} on your plan` : "Unlimited on your plan") : " "}
+          value={me.data ? me.data.usage.pincodes : null}
+          caption={plans.data && me.data ? (planLimit != null ? `Of ${planLimit} on your plan` : "Unlimited on your plan") : " "}
         />
       </section>
 
       {/* Toolbar */}
       <section className="flex flex-wrap items-center justify-between gap-4 py-1">
-        <div className="flex flex-wrap items-center gap-3">
-          {FILTERS.map((f) => {
+        <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Filter products">
+          {visibleFilters.map((f) => {
             const active = filter === f.key;
             return (
               <button
@@ -157,7 +162,7 @@ function ProductsView() {
                 }`}
               >
                 {f.label}
-                <span className={active ? "text-linen/80" : "text-ink/60"}>{searched.data ? counts[f.key] : "–"}</span>
+                <span className={active ? "text-linen/90" : "text-ink/75"}>{data ? counts[f.key] : "–"}</span>
               </button>
             );
           })}

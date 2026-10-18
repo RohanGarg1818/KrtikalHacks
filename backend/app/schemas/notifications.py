@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
+
+from .common import AlertKind, ClockTime, PatchModel
+
+# Alert kinds plus the two non-alert message streams a chat can opt into.
+TelegramAlertType = AlertKind | Literal["recommendations", "briefing"]
 
 
 class AlertResponse(BaseModel):
@@ -35,7 +40,9 @@ class LinkCodeRequest(BaseModel):
 
 class LinkCodeResponse(BaseModel):
     code: str
-    deep_link: str
+    # `https://t.me/<bot>?start=<code>` when the bot username is known.
+    deep_link: str | None
+    command: str
     expires_at: datetime
     product_id: str
 
@@ -58,9 +65,11 @@ class TelegramStatusResponse(BaseModel):
     links: list[TelegramChatLink] = Field(default_factory=list)
 
 
-class TelegramLinkUpdate(BaseModel):
-    alert_types: list[str] | None = None
-    briefing_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+class TelegramLinkUpdate(PatchModel):
+    nullable_fields: ClassVar[frozenset[str]] = frozenset({"briefing_time"})
+
+    alert_types: list[TelegramAlertType] | None = Field(default=None, max_length=20)
+    briefing_time: ClockTime | None = None
 
 
 class TelegramTestResponse(BaseModel):

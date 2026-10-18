@@ -1,6 +1,8 @@
 """Idempotently seed the local ShelfSense demo workspace.
 
 Run from backend/: ``python -m scripts.seed`` after ``alembic upgrade head``.
+Every entity is checked on its own, so re-running fills in whatever is missing
+(for example after the demo account was removed) and never duplicates rows.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.deps import DEMO_EMAIL
@@ -39,6 +42,7 @@ SEED_CODES = [
     "110057",
     "110065",
 ]
+SEED_PLATFORMS = ("blinkit", "zepto")
 PRODUCTS = [
     ("Amul Taaza Toned Milk 500 ml", "Amul", 26.0, 30.0),
     ("Haldiram Bhujia 200 g", "Haldiram", 47.0, 55.0),
@@ -70,13 +74,28 @@ def deterministic_result(
     )
 
 
-async def seed() -> None:
-    async with SessionLocal() as session:
-        user = await session.scalar(select(User).where(User.email == DEMO_EMAIL))
-        if user is not None:
-            print("Demo data already exists; no changes made.")
-            return
+async def seed_pincodes(session: AsyncSession) -> int:
+    """Insert or refresh every catalogue pincode; returns how many were new."""
+    with DATA_PATH.open(newline="", encoding="utf-8") as csv_file:
+        rows = list(csv.DictReader(csv_file))
+    existing = set((await session.scalars(select(Pincode.code))).all())
+    for row in rows:
+        await session.merge(
+            Pincode(
+                code=row["code"],
+                area_name=row["area_name"],
+                city=row["city"],
+                lat=float(row["lat"]),
+                lng=float(row["lng"]),
+            )
+        )
+    await session.flush()
+    return sum(row["code"] not in existing for row in rows)
 
+
+async def ensure_demo_user(session: AsyncSession) -> User:
+    user = await session.scalar(select(User).where(User.email == DEMO_EMAIL))
+    if user is None:
         user = User(
             name="Riya Sharma",
             email=DEMO_EMAIL,
@@ -86,145 +105,210 @@ async def seed() -> None:
         )
         session.add(user)
         await session.flush()
-        session.add_all(
-            [
-                Subscription(user_id=user.id, plan="pro", status="active"),
-                UserSettings(user_id=user.id, briefing_time="09:00"),
-            ]
+    subscription = await session.scalar(
+        select(Subscription.id).where(Subscription.user_id == user.id)
+    )
+    if subscription is None:
+        session.add(Subscription(user_id=user.id, plan="pro", status="active"))
+    if await session.get(UserSettings, user.id) is None:
+        session.add(UserSettings(user_id=user.id, briefing_time="09:00"))
+    await session.flush()
+    return user
+
+
+async def seed_product_history(session: AsyncSession, product: Product) -> None:
+    """Competitors, pincode selection, 14 days of results, and AI artefacts."""
+    now = utcnow()
+    competitors = [
+        Competitor(
+            product_id=product.id,
+            name=f"{product.brand} Value Pack",
+            platform="blinkit",
+            search_query=product.search_query,
+            confirmed=True,
+        ),
+        Competitor(
+            product_id=product.id,
+            name=f"{product.brand} Market Choice",
+            platform="zepto",
+            search_query=product.search_query,
+            confirmed=True,
+        ),
+    ]
+    session.add_all(competitors)
+    session.add_all(
+        ProductPincode(product_id=product.id, pincode=code, platform=platform)
+        for code in SEED_CODES
+        for platform in SEED_PLATFORMS
+    )
+    await session.flush()
+
+    for day_sample in range(28):
+        checked_at = now - timedelta(hours=(27 - day_sample) * 12)
+        run = CheckRun(
+            product_id=product.id,
+            trigger="scheduled",
+            status="done",
+            total_jobs=60,
+            done_jobs=60,
+            credits_used=60,
+            started_at=checked_at,
+            finished_at=checked_at + timedelta(minutes=2),
         )
-        rows: list[dict[str, str]] = []
-        with DATA_PATH.open(newline="", encoding="utf-8") as csv_file:
-            rows = list(csv.DictReader(csv_file))
-        session.add_all(
-            [
-                Pincode(
-                    code=row["code"],
-                    area_name=row["area_name"],
-                    city=row["city"],
-                    lat=float(row["lat"]),
-                    lng=float(row["lng"]),
-                )
-                for row in rows
-            ]
-        )
+        session.add(run)
         await session.flush()
-
-        product_rows: list[Product] = []
-        for name, brand, cost, floor in PRODUCTS:
-            product = Product(
-                user_id=user.id,
-                name=name,
-                brand=brand,
-                search_query=name,
-                cost_price=cost,
-                floor_price=floor,
-                check_frequency="6h",
+        results: list[CheckResult] = []
+        for platform in SEED_PLATFORMS:
+            platform_competitor = next(
+                item for item in competitors if item.platform == platform
             )
-            product_rows.append(product)
-            session.add(product)
-        await session.flush()
-
-        now = utcnow()
-        for product in product_rows:
-            competitors = [
-                Competitor(
-                    product_id=product.id,
-                    name=f"{product.brand} Value Pack",
-                    platform="blinkit",
-                    search_query=product.search_query,
-                    confirmed=True,
-                ),
-                Competitor(
-                    product_id=product.id,
-                    name=f"{product.brand} Market Choice",
-                    platform="zepto",
-                    search_query=product.search_query,
-                    confirmed=True,
-                ),
-            ]
-            session.add_all(competitors)
-            session.add_all(
-                ProductPincode(product_id=product.id, pincode=code, platform=platform)
-                for code in SEED_CODES
-                for platform in ("blinkit", "zepto")
-            )
-            await session.flush()
-
-            for day_sample in range(28):
-                checked_at = now - timedelta(hours=(27 - day_sample) * 12)
-                run = CheckRun(
-                    product_id=product.id,
-                    trigger="scheduled",
-                    status="done",
-                    total_jobs=60,
-                    done_jobs=60,
-                    credits_used=60,
-                    started_at=checked_at,
-                    finished_at=checked_at + timedelta(minutes=2),
-                )
-                session.add(run)
-                await session.flush()
-                results: list[CheckResult] = []
-                for platform in ("blinkit", "zepto"):
-                    platform_competitor = next(
-                        item for item in competitors if item.platform == platform
+            for code in SEED_CODES:
+                for competitor_id, offset in (
+                    (None, 0.0),
+                    (platform_competitor.id, -2.5),
+                ):
+                    stock, price, mrp, eta, rating = deterministic_result(
+                        product, code, platform, offset, day_sample
                     )
-                    for code in SEED_CODES:
-                        for competitor_id, offset in (
-                            (None, 0.0),
-                            (platform_competitor.id, -2.5),
-                        ):
-                            stock, price, mrp, eta, rating = deterministic_result(
-                                product, code, platform, offset, day_sample
-                            )
-                            results.append(
-                                CheckResult(
-                                    run_id=run.id,
-                                    product_id=product.id,
-                                    competitor_id=competitor_id,
-                                    platform=platform,
-                                    pincode=code,
-                                    in_stock=stock,
-                                    price=price,
-                                    mrp=mrp,
-                                    eta_minutes=eta,
-                                    rating=rating,
-                                    status="ok",
-                                    raw={"seeded": True},
-                                    checked_at=checked_at,
-                                )
-                            )
-                session.add_all(results)
+                    results.append(
+                        CheckResult(
+                            run_id=run.id,
+                            product_id=product.id,
+                            competitor_id=competitor_id,
+                            platform=platform,
+                            pincode=code,
+                            in_stock=stock,
+                            price=price,
+                            mrp=mrp,
+                            eta_minutes=eta,
+                            rating=rating,
+                            status="ok",
+                            raw={"seeded": True},
+                            checked_at=checked_at,
+                        )
+                    )
+        session.add_all(results)
 
-            session.add_all(
-                [
-                    AISummary(
-                        product_id=product.id,
-                        summary_text=f"{product.name} has stable Delhi coverage with watch points in South Delhi.",
-                        evidence={"seeded": True},
-                        source="fallback",
-                    ),
-                    Recommendation(
-                        product_id=product.id,
-                        priority="medium",
-                        action_text="Monitor competitor price changes before the next check.",
-                        impact_text="Protect margin while retaining local competitiveness.",
-                        evidence={"source": "seed"},
-                    ),
-                    ReviewInsight(
-                        product_id=product.id,
-                        competitor_id=None,
-                        loves=["Reliable quality", "Good value"],
-                        complaints=["Occasional availability gaps"],
-                    ),
-                ]
+    session.add_all(
+        [
+            AISummary(
+                product_id=product.id,
+                summary_text=(
+                    f"{product.name} has stable Delhi coverage with watch points "
+                    "in South Delhi."
+                ),
+                evidence={"seeded": True},
+                source="fallback",
+            ),
+            Recommendation(
+                product_id=product.id,
+                priority="medium",
+                action_text="Monitor competitor price changes before the next check.",
+                impact_text="Protect margin while retaining local competitiveness.",
+                evidence={"source": "seed"},
+            ),
+            ReviewInsight(
+                product_id=product.id,
+                competitor_id=None,
+                loves=["Reliable quality", "Good value"],
+                complaints=["Occasional availability gaps"],
+            ),
+        ]
+    )
+    await session.flush()
+
+
+async def seed_products(session: AsyncSession, user: User) -> tuple[list[Product], int]:
+    """Create each missing demo product with its history.
+
+    Returns the demo products in `PRODUCTS` order and how many were created.
+    """
+    existing = {
+        product.name: product
+        for product in (
+            await session.scalars(select(Product).where(Product.user_id == user.id))
+        ).all()
+    }
+    created = 0
+    for name, brand, cost, floor in PRODUCTS:
+        if name in existing:
+            continue
+        product = Product(
+            user_id=user.id,
+            name=name,
+            brand=brand,
+            search_query=name,
+            cost_price=cost,
+            floor_price=floor,
+            check_frequency="6h",
+        )
+        session.add(product)
+        await session.flush()
+        await seed_product_history(session, product)
+        existing[name] = product
+        created += 1
+    return [existing[name] for name, *_ in PRODUCTS], created
+
+
+async def seed_alerts(
+    session: AsyncSession, user: User, products: list[Product]
+) -> None:
+    amul, bhujia, paper_boat = products
+    known = set(
+        (
+            await session.scalars(
+                select(Alert.dedupe_key).where(Alert.user_id == user.id)
             )
-
-        first_product = product_rows[0]
+        ).all()
+    )
+    alerts = [
+        Alert(
+            user_id=user.id,
+            product_id=amul.id,
+            kind="oos_any",
+            message="Amul Taaza is out of stock in Saket.",
+            evidence={"pincode": "110017"},
+            dedupe_key="seed:amul:110017",
+        ),
+        Alert(
+            user_id=user.id,
+            product_id=amul.id,
+            kind="oos_any",
+            message="Amul Taaza is out of stock in Greater Kailash.",
+            evidence={"pincode": "110048"},
+            dedupe_key="seed:amul:110048",
+        ),
+        Alert(
+            user_id=user.id,
+            product_id=bhujia.id,
+            kind="price_change_pct",
+            message="A rival price changed for Haldiram Bhujia.",
+            evidence={},
+            dedupe_key="seed:bhujia:price",
+        ),
+        Alert(
+            user_id=user.id,
+            product_id=paper_boat.id,
+            kind="price_gap_pct",
+            message="Paper Boat has a price gap on Zepto.",
+            evidence={},
+            dedupe_key="seed:paperboat:gap",
+        ),
+        Alert(
+            user_id=user.id,
+            product_id=paper_boat.id,
+            kind="rating_below",
+            message="A competitor rating needs attention.",
+            evidence={},
+            dedupe_key="seed:paperboat:rating",
+        ),
+    ]
+    session.add_all(alert for alert in alerts if alert.dedupe_key not in known)
+    if "seed:amul:110017" not in known:
         session.add_all(
             [
                 ChangeEvent(
-                    product_id=first_product.id,
+                    product_id=amul.id,
                     platform="blinkit",
                     pincode="110017",
                     kind="went_oos",
@@ -232,58 +316,27 @@ async def seed() -> None:
                     new_value=0.0,
                 ),
                 ChangeEvent(
-                    product_id=first_product.id,
+                    product_id=amul.id,
                     platform="blinkit",
                     pincode="110048",
                     kind="price_rise",
                     old_value=34.0,
                     new_value=36.0,
                 ),
-                Alert(
-                    user_id=user.id,
-                    product_id=first_product.id,
-                    kind="oos_any",
-                    message="Amul Taaza is out of stock in Saket.",
-                    evidence={"pincode": "110017"},
-                    dedupe_key="seed:amul:110017",
-                ),
-                Alert(
-                    user_id=user.id,
-                    product_id=first_product.id,
-                    kind="oos_any",
-                    message="Amul Taaza is out of stock in Greater Kailash.",
-                    evidence={"pincode": "110048"},
-                    dedupe_key="seed:amul:110048",
-                ),
-                Alert(
-                    user_id=user.id,
-                    product_id=product_rows[1].id,
-                    kind="price_change_pct",
-                    message="A rival price changed for Haldiram Bhujia.",
-                    evidence={},
-                    dedupe_key="seed:bhujia:price",
-                ),
-                Alert(
-                    user_id=user.id,
-                    product_id=product_rows[2].id,
-                    kind="price_change_pct",
-                    message="Paper Boat has a price gap on Zepto.",
-                    evidence={},
-                    dedupe_key="seed:paperboat:gap",
-                ),
-                Alert(
-                    user_id=user.id,
-                    product_id=product_rows[2].id,
-                    kind="rating_below",
-                    message="A competitor rating needs attention.",
-                    evidence={},
-                    dedupe_key="seed:paperboat:rating",
-                ),
             ]
         )
+
+
+async def seed() -> None:
+    async with SessionLocal() as session:
+        new_pincodes = await seed_pincodes(session)
+        user = await ensure_demo_user(session)
+        products, created = await seed_products(session, user)
+        await seed_alerts(session, user, products)
         await session.commit()
         print(
-            "Seeded Riya Sharma, 3 products, 15 Delhi pincodes, and 14 days of mock history."
+            f"Seed complete: {new_pincodes} new pincodes, {created} new demo "
+            f"products for {user.name}."
         )
 
 

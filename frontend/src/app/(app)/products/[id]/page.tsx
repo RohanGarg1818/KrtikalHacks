@@ -1,11 +1,13 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element */
-import { use, useState, type ReactNode } from "react";
-import { API_URL, api, useApi } from "@/lib/api";
-import type { Competitor, CompetitorRow, Overview, Product, Reviews, Weekly } from "@/lib/types";
+import { use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { api, downloadFile, errorMessage, useApi } from "@/lib/api";
+import type { Competitor, CompetitorRow, Overview, Product, Reviews, RunSummary, Weekly } from "@/lib/types";
 import { FREQUENCY_LABEL, pct, platformLabel, rupees, timeAgo } from "@/lib/format";
-import { useRun } from "@/lib/useRun";
+import { toast } from "@/lib/toast";
+import { isActiveRunStatus, useRun } from "@/lib/useRun";
+import AgentConsole from "@/components/agent/AgentConsole";
 import ProductHeader, { RecheckButton } from "@/components/ProductHeader";
 import RecommendationCard from "@/components/RecommendationCard";
 import WeeklyChart from "@/components/WeeklyChart";
@@ -27,12 +29,41 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
   };
   const run = useRun(id, refreshAll);
   const [busy, setBusy] = useState<string | null>(null);
+  const competitors = useApi<Competitor[]>(`/products/${id}/competitors`);
+  const names = useMemo(() => new Map((competitors.data ?? []).map((c) => [c.id, c.name])), [competitors.data]);
+
+  // A run may already be going (scheduler, another tab): follow it instead of offering a second one.
+  const activeRuns = useApi<RunSummary[]>(`/runs?product_id=${encodeURIComponent(id)}&limit=1`, { shouldRetryOnError: false });
+  const attached = useRef(false);
+  const { attach } = run;
+  const hasRun = !!run.run;
+  useEffect(() => {
+    const latest = activeRuns.data?.[0];
+    if (attached.current || hasRun || !latest || !isActiveRunStatus(latest.status)) return;
+    attached.current = true;
+    attach(latest.id, latest.total_jobs);
+  }, [activeRuns.data, attach, hasRun]);
+
+  const announced = useRef<string | null>(null);
+  useEffect(() => {
+    const r = run.run;
+    if (!r || announced.current === r.runId) return;
+    if (r.phase === "done" || r.phase === "failed") {
+      announced.current = r.runId;
+      const ok = r.completed - r.failed;
+      if (r.phase === "failed") toast.error(`Check failed: none of ${r.total} checks returned data`);
+      else toast(`Check finished: ${ok} result${ok === 1 ? "" : "s"}${r.failed ? `, ${r.failed} failed` : ""}`);
+    }
+  }, [run.run]);
 
   async function generate(kind: "summary" | "recommendations" | "reviews") {
     setBusy(kind);
     try {
       await api(`/products/${id}/ai/${kind}`, { method: "POST" });
       refreshAll();
+      toast(kind === "summary" ? "Summary updated" : kind === "reviews" ? "Review insights updated" : "Recommendations refreshed");
+    } catch (e) {
+      toast.error(errorMessage(e, "Could not generate that right now"));
     } finally {
       setBusy(null);
     }
@@ -67,11 +98,20 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
         )}
       </div>
 
-      {(prog || run.error) && <RunBanner error={run.error} progress={prog} />}
+      {run.error && !run.run && (
+        <div className="card bg-sand px-[26px] py-4 text-[15px] font-semibold" role="alert">
+          ✕ {run.error}
+        </div>
+      )}
+      {run.run && <AgentConsole run={run.run} names={names} onClose={run.reset} />}
 
       {/* KPI tiles */}
       <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6 stagger">
-        {k ? (
+        {overview.error && !overview.data ? (
+          <div className="sm:col-span-2 xl:col-span-4">
+            <ErrorCard error={overview.error} onRetry={() => overview.mutate()} />
+          </div>
+        ) : k ? (
           <>
             <KpiTile tone="slate" eyebrow="Your avg price" value={rupees(k.avg_price.value, 2)} spark={k.avg_price.sparkline} />
             <KpiTile tone="sand" eyebrow="Cheapest rival" value={rupees(k.cheapest_rival.value, 2)} spark={k.cheapest_rival.sparkline} />
@@ -93,7 +133,9 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
             </button>
           </div>
           <div className="flex flex-col gap-5 pt-5 stagger">
-            {!overview.data ? (
+            {overview.error && !overview.data ? (
+              <ErrorCard error={overview.error} onRetry={() => overview.mutate()} />
+            ) : !overview.data ? (
               <CardSkeleton />
             ) : pending.length === 0 ? (
               <Empty title="All caught up">No pending actions for this product.</Empty>
@@ -143,7 +185,9 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
         <div className="section-head">
           <h2 className={H2}>You vs competitors</h2>
         </div>
-        {!rows.data ? (
+        {rows.error && !rows.data ? (
+          <ErrorCard error={rows.error} onRetry={() => rows.mutate()} />
+        ) : !rows.data ? (
           <CardSkeleton />
         ) : rows.data.length === 0 ? (
           <Empty title="No competitors yet">Add rivals in this product&apos;s settings.</Empty>
@@ -198,7 +242,11 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
               {busy === "reviews" ? "Reading…" : "Refresh"}
             </button>
           </div>
-          {!reviews.data ? (
+          {reviews.error && !reviews.data ? (
+            <div className="pt-5">
+              <ErrorCard error={reviews.error} onRetry={() => reviews.mutate()} />
+            </div>
+          ) : !reviews.data ? (
             <Skeleton className="h-24 mt-5" />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-5">
@@ -220,30 +268,6 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
           </ul>
         </div>
       </section>
-    </div>
-  );
-}
-
-function RunBanner({ error, progress }: { error: string | null; progress: ReturnType<typeof useRun>["progress"] }) {
-  if (error) return <div className="card bg-sand px-[26px] py-4 text-[15px] font-semibold">{error}</div>;
-  if (!progress) return null;
-  const done = progress.done + progress.failed;
-  const ratio = progress.total ? Math.min(1, done / progress.total) : 0;
-  return (
-    <div className={`card px-[26px] py-5 flex flex-col gap-3 ${progress.finished ? "bg-sage" : "bg-linen"}`} role="status" aria-live="polite">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-semibold text-[16px] leading-6">
-          {progress.finished
-            ? `✓ Check finished: ${progress.done} result${progress.done === 1 ? "" : "s"}${progress.failed ? `, ${progress.failed} failed` : ""}. Summary and actions refreshed.`
-            : "Checking every pincode and platform…"}
-        </p>
-        <p className="eyebrow">
-          {Math.min(progress.finished ? progress.done : done, progress.total)}/{progress.total} checks
-        </p>
-      </div>
-      <div className="h-[10px] rounded-full overflow-hidden bg-ink/15">
-        <div className={`h-full rounded-full transition-[width] duration-500 ${progress.finished ? "bg-ink" : "bg-slate"}`} style={{ width: `${(progress.finished ? 1 : ratio) * 100}%` }} />
-      </div>
     </div>
   );
 }
@@ -304,6 +328,7 @@ function Idea({ title, children }: { title: string; children: ReactNode }) {
 
 function WeeklySection({ id, platforms }: { id: string; platforms: string[] }) {
   const [platform, setPlatform] = useState<string>("");
+  const [downloading, setDownloading] = useState(false);
   const weekly = useApi<Weekly>(`/products/${id}/weekly${platform ? `?platform=${platform}` : ""}`, { keepPreviousData: true });
   const competitors = useApi<Competitor[]>(`/products/${id}/competitors`);
   const names = new Map(competitors.data?.map((c) => [c.id, c.name]));
@@ -320,18 +345,34 @@ function WeeklySection({ id, platforms }: { id: string; platforms: string[] }) {
     <section className="flex flex-col gap-6">
       <div className="section-head flex-wrap">
         <h2 className={H2}>This week vs last week</h2>
-        <a className="btn btn-ghost btn-sm" href={`${API_URL}/api/products/${id}/weekly/report.csv${platform ? `?platform=${platform}` : ""}`}>
-          ↓ CSV report
-        </a>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          disabled={downloading}
+          onClick={async () => {
+            setDownloading(true);
+            try {
+              await downloadFile(`/products/${id}/weekly/report.csv${platform ? `?platform=${encodeURIComponent(platform)}` : ""}`, `shelfsense-weekly${platform ? `-${platform}` : ""}.csv`);
+            } catch (e) {
+              toast.error(errorMessage(e, "Could not download the report"));
+            } finally {
+              setDownloading(false);
+            }
+          }}
+        >
+          {downloading ? "Preparing…" : "↓ CSV report"}
+        </button>
       </div>
       <div className="flex gap-2 flex-wrap">
         {["", ...platforms].map((pl) => (
-          <button key={pl || "all"} className="pill" data-active={platform === pl} onClick={() => setPlatform(pl)}>
+          <button key={pl || "all"} type="button" className="pill" data-active={platform === pl} aria-pressed={platform === pl} onClick={() => setPlatform(pl)}>
             {platformLabel(pl || null)}
           </button>
         ))}
       </div>
-      {!w ? (
+      {weekly.error && !w ? (
+        <ErrorCard error={weekly.error} onRetry={() => weekly.mutate()} />
+      ) : !w ? (
         <CardSkeleton />
       ) : (
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">

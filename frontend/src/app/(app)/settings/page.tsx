@@ -3,9 +3,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, API_URL, useApi } from "@/lib/api";
+import { api, ApiError, downloadFile, errorMessage, useApi } from "@/lib/api";
+import { setDisplayTimeZone } from "@/lib/format";
+import { toast } from "@/lib/toast";
 import type { Health, Me, Pincode, PlanLimits, Plans, ProductCard, UserSettings } from "@/lib/types";
-import { CardSkeleton } from "@/components/ui";
+import { CardSkeleton, ErrorCard, Modal, useConfirm } from "@/components/ui";
 
 const ASSET = "/figma/settings";
 
@@ -37,10 +39,19 @@ const LANGUAGES = [
   ["hi", "हिन्दी (Hindi)"],
 ] as const;
 
-const TIMEZONES = [
-  ["Asia/Kolkata", "IST (UTC+5:30)"],
-  ["UTC", "UTC"],
-] as const;
+/** Common zones first; the full IANA list follows when the browser exposes it. */
+const COMMON_ZONES = ["Asia/Kolkata", "UTC", "Asia/Dubai", "Asia/Singapore", "Europe/London", "America/New_York"];
+const ZONE_LABEL: Record<string, string> = { "Asia/Kolkata": "IST · Asia/Kolkata (UTC+5:30)", UTC: "UTC" };
+
+function timeZoneOptions(current: string): (readonly [string, string])[] {
+  let all: string[] = [];
+  try {
+    const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+    all = intl.supportedValuesOf?.("timeZone") ?? [];
+  } catch {}
+  const zones = Array.from(new Set([...COMMON_ZONES, ...(current ? [current] : []), ...all]));
+  return zones.map((z) => [z, ZONE_LABEL[z] ?? z.replace(/_/g, " ")] as const);
+}
 
 /** Quiet-hour presets → quiet_hours_start / quiet_hours_end. Empty = off. */
 const QUIET_PRESETS: [string, string][] = [
@@ -153,7 +164,7 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
     <label className="flex flex-col gap-2 min-w-0">
       <span className="text-[14px] leading-5 font-semibold text-ink">
         {label}
-        {hint ? <span className="ml-2 font-medium text-ink/60">{hint}</span> : null}
+        {hint ? <span className="ml-2 font-medium text-ink/75">{hint}</span> : null}
       </span>
       {children}
     </label>
@@ -305,12 +316,20 @@ export default function SettingsPage() {
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [planBusy, setPlanBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmUi, confirm] = useConfirm();
   const [active, setActive] = useState<string>("profile");
   const spyLock = useRef(0); // ignore scroll-spy briefly after a nav click
 
   useEffect(() => {
     if (baseline) setDraft(baseline);
   }, [baseline]);
+
+  // Dates across the app render in the saved time zone.
+  const savedTz = me.data?.profile.timezone;
+  useEffect(() => {
+    if (savedTz) setDisplayTimeZone(savedTz);
+  }, [savedTz]);
 
   const dirty = !!(draft && baseline && JSON.stringify(draft) !== JSON.stringify(baseline));
 
@@ -339,6 +358,8 @@ export default function SettingsPage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, [ready]);
 
+  if (me.error && !me.data) return <ErrorCard error={me.error} onRetry={() => me.mutate()} />;
+  if (settings.error && !settings.data) return <ErrorCard error={settings.error} onRetry={() => settings.mutate()} />;
   if (!me.data || !settings.data || !draft || !baseline) return <CardSkeleton rows={8} />;
 
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => {
@@ -375,22 +396,35 @@ export default function SettingsPage() {
         );
       await Promise.all(jobs);
       await Promise.all([me.mutate(), settings.mutate()]);
+      if (draft.timezone !== baseline.timezone) setDisplayTimeZone(draft.timezone);
       setNotice({ kind: "ok", text: "All changes saved" });
+      toast("Settings saved");
     } catch (e) {
-      setNotice({ kind: "err", text: e instanceof Error ? e.message : "Couldn't save changes" });
+      const text = errorMessage(e, "Couldn't save changes");
+      setNotice({ kind: "err", text });
+      toast.error(text);
     } finally {
       setSaving(false);
     }
   }
 
   async function switchPlan(plan: string) {
+    if (planBusy) return;
     setPlanBusy(plan);
     try {
-      await api("/me/plan", { method: "POST", json: { plan } });
-      await Promise.all([me.mutate(), plans.mutate()]);
+      const r = await api<{ plan: string; adjusted_products?: number; paused_products?: number }>("/me/plan", { method: "POST", json: { plan } });
+      await Promise.all([me.mutate(), plans.mutate(), products.mutate()]);
       setPlanOpen(false);
+      const notes: string[] = [];
+      if (r.adjusted_products) notes.push(`${r.adjusted_products} product${r.adjusted_products === 1 ? "" : "s"} moved to a slower check schedule`);
+      if (r.paused_products) notes.push(`${r.paused_products} product${r.paused_products === 1 ? "" : "s"} paused to fit the plan`);
+      toast(`Switched to ${plan} (test mode)${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Couldn't change plan");
+      toast.error(
+        e instanceof ApiError && (e.status === 403 || e.status === 409)
+          ? `${e.message || "Plan changes are only available in test mode"}`
+          : errorMessage(e, "Couldn't change plan"),
+      );
     } finally {
       setPlanBusy(null);
     }
@@ -407,7 +441,7 @@ export default function SettingsPage() {
   if (!quietOpts.some(([s, e]) => `${s}|${e}` === quietKey)) quietOpts.push([draft.quiet_hours_start, draft.quiet_hours_end]);
   const cities = Array.from(new Set([...(pincodes.data ?? []).map((p) => p.city), ...(draft.default_city ? [draft.default_city] : [])])).sort();
   const cityOpts = [["", "Not set"] as const, ...cities.map((c) => [c, c] as const)];
-  const tzOpts = TIMEZONES.some(([v]) => v === draft.timezone) ? TIMEZONES : [...TIMEZONES, [draft.timezone, draft.timezone] as const];
+  const tzOpts = timeZoneOptions(draft.timezone);
 
   // Telegram chats.
   const productList = products.data ?? [];
@@ -424,7 +458,7 @@ export default function SettingsPage() {
   const connectHref = (wantGroup: boolean) => {
     const target =
       productList.find((p) => !(tg.byProduct?.[p.id] ?? []).some((l) => isGroupChat(l.chat_id) === wantGroup)) ?? productList[0];
-    return target ? `/products/${target.id}/telegram` : "/products";
+    return target ? `/products/${target.id}/telegram${wantGroup ? "?mode=group" : ""}` : "/products";
   };
 
   async function disconnectChat(chatId: string) {
@@ -435,14 +469,29 @@ export default function SettingsPage() {
     const clean = chat.productIds.find((pid) => (tg.byProduct![pid] ?? []).every((l) => l.chat_id === chatId));
     const pid = clean ?? chat.productIds[0];
     const p = productList.find((x) => x.id === pid);
-    const extra = clean ? "" : `\n\nThis also disconnects any other chat linked to "${p?.name ?? "that product"}".`;
-    if (!confirm(`Disconnect "${chat.title ?? "this chat"}" from ShelfSense alerts for ${chat.productIds.length} product${chat.productIds.length === 1 ? "" : "s"}?${extra}`)) return;
+    const ok = await confirm({
+      title: `Disconnect "${chat.title ?? "this chat"}"?`,
+      body: (
+        <>
+          It stops getting alerts for {p?.name ?? "this product"}.
+          {clean ? "" : ` This also disconnects any other chat linked to "${p?.name ?? "that product"}".`}
+          {chat.productIds.length > 1 ? ` It stays linked to ${chat.productIds.length - 1} other product${chat.productIds.length === 2 ? "" : "s"} — manage them per product.` : ""}
+        </>
+      ),
+      confirmLabel: "Disconnect",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(`tg-${chatId}`);
     try {
       await api(`/products/${pid}/telegram`, { method: "DELETE" });
       await products.mutate();
       await tg.reload();
+      toast("Chat disconnected");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Couldn't disconnect");
+      toast.error(errorMessage(e, "Couldn't disconnect"));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -455,7 +504,37 @@ export default function SettingsPage() {
       : [{ key: "group", label: "Team group", connected: false, group: true }]),
   ];
 
-  const devAuth = health.data?.integrations.dev_auth;
+  const devAuth = health.data ? (health.data.auth_mode ? health.data.auth_mode === "dev" : !!health.data.integrations.dev_auth) : false;
+
+  async function exportData(format: "csv" | "json") {
+    if (busy) return;
+    setBusy(`export-${format}`);
+    try {
+      await downloadFile(`/me/export${format === "json" ? "?format=json" : ""}`, `shelfsense-export.${format}`);
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't export your data"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteAccount() {
+    const ok = await confirm({
+      title: "Delete your account?",
+      body: "Every product, check, alert and Telegram link is removed. This cannot be undone.",
+      confirmLabel: "Delete account",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy("delete");
+    try {
+      await api("/me", { method: "DELETE" });
+      window.location.href = "/";
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't delete account"));
+      setBusy(null);
+    }
+  }
   const authTip = devAuth
     ? "Not available in demo sign-in: every request uses the demo account."
     : "Managed by your sign-in provider — not available here yet.";
@@ -553,7 +632,7 @@ export default function SettingsPage() {
               <button type="button" className="btn btn-primary h-12 py-0 px-[26px]" onClick={() => setPlanOpen(true)}>
                 Change plan
               </button>
-              <Tip tip="Test mode — no payments are taken, so there are no invoices.">
+              <Tip tip="Test mode: no payments are taken, so there are no invoices.">
                 <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled>
                   View invoices
                 </button>
@@ -607,8 +686,8 @@ export default function SettingsPage() {
                 }
               >
                 {r.connected && r.chatId ? (
-                  <button type="button" className="btn btn-ghost h-12 py-0" onClick={() => disconnectChat(r.chatId!)}>
-                    Disconnect
+                  <button type="button" className="btn btn-ghost h-12 py-0" disabled={busy === `tg-${r.chatId}`} onClick={() => disconnectChat(r.chatId!)}>
+                    {busy === `tg-${r.chatId}` ? "Disconnecting…" : "Disconnect"}
                   </button>
                 ) : (
                   <Link href={connectHref(r.group)} className="btn btn-primary h-12 py-0 px-[26px]">
@@ -679,9 +758,12 @@ export default function SettingsPage() {
           {/* 7. Data & privacy */}
           <Card id="data" title="Data & privacy">
             <div className="flex flex-wrap items-center gap-4 pb-6">
-              <a className="btn btn-ghost h-12 py-0 px-[26px]" href={`${API_URL}/api/me/export`} download="shelfsense-export.csv" title="Every stock and price check, as a CSV file">
-                Export my data (CSV)
-              </a>
+              <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled={!!busy} onClick={() => exportData("csv")} title="Every stock and price check, as a CSV file">
+                {busy === "export-csv" ? "Exporting…" : "Export checks (CSV)"}
+              </button>
+              <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled={!!busy} onClick={() => exportData("json")} title="Your whole account: profile, products, rules, results, alerts and chats">
+                {busy === "export-json" ? "Exporting…" : "Export account (JSON)"}
+              </button>
               <Tip tip="Bulk screenshot download is coming soon — open a check to view its screenshots.">
                 <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled>
                   Download screenshots
@@ -694,20 +776,8 @@ export default function SettingsPage() {
                 <p className="text-[16px] leading-6 font-semibold text-ink">Delete account</p>
                 <p className="text-[14px] leading-5 text-ink/80">This cannot be undone.</p>
               </div>
-              <button
-                type="button"
-                className="btn btn-ink h-12 py-0 px-[26px]"
-                onClick={async () => {
-                  if (!confirm("Delete your account and every product, check and alert? This cannot be undone.")) return;
-                  try {
-                    await api("/me", { method: "DELETE" });
-                    window.location.href = "/";
-                  } catch (e) {
-                    alert(e instanceof Error ? e.message : "Couldn't delete account");
-                  }
-                }}
-              >
-                Delete account
+              <button type="button" className="btn btn-ink h-12 py-0 px-[26px]" disabled={busy === "delete"} onClick={deleteAccount}>
+                {busy === "delete" ? "Deleting…" : "Delete account"}
               </button>
             </div>
           </Card>
@@ -743,12 +813,10 @@ export default function SettingsPage() {
       </div>
 
       {/* Plan picker */}
-      {planOpen ? (
-        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-ink/50 p-4" role="dialog" aria-modal="true" aria-label="Change plan" onClick={() => setPlanOpen(false)}>
-          <div className="card w-full max-w-[760px] max-h-[90vh] overflow-y-auto p-5 sm:p-[26px]" onClick={(e) => e.stopPropagation()}>
+      <Modal open={planOpen} onClose={() => !planBusy && setPlanOpen(false)} labelledBy="plan-picker-title" className="max-w-[760px] p-5 sm:p-[26px]">
             <div className="flex items-start justify-between gap-4 pb-2">
-              <h2 className="text-[28px] leading-9 text-ink">Change plan</h2>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPlanOpen(false)}>
+              <h2 id="plan-picker-title" className="text-[28px] leading-9 text-ink">Change plan</h2>
+              <button type="button" className="btn btn-ghost btn-sm" disabled={!!planBusy} onClick={() => setPlanOpen(false)}>
                 Close
               </button>
             </div>
@@ -776,9 +844,8 @@ export default function SettingsPage() {
                 );
               })}
             </div>
-          </div>
-        </div>
-      ) : null}
+      </Modal>
+      {confirmUi}
     </div>
   );
 }

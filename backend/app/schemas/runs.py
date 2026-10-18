@@ -1,16 +1,30 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from .common import PincodeCode, Platform
 
 
 class RunCreate(BaseModel):
-    pincodes: list[str] | None = None
-    platforms: list[str] | None = None
+    pincodes: list[PincodeCode] | None = Field(default=None, max_length=200)
+    platforms: list[Platform] | None = Field(default=None, max_length=5)
 
 
 class RunCreated(BaseModel):
     run_id: str
     estimated_credits: int
+
+
+class RunResultItem(BaseModel):
+    id: str
+    job_key: str
+    platform: str
+    pincode: str
+    competitor_id: str | None
+    status: str
+    price: float | None
+    in_stock: bool | None
+    screenshot_url: str | None
 
 
 class RunResponse(BaseModel):
@@ -26,3 +40,41 @@ class RunResponse(BaseModel):
     credits_used: int
     started_at: datetime | None
     finished_at: datetime | None
+
+
+class RunDetail(RunResponse):
+    mode: str
+    results: list[RunResultItem] = Field(default_factory=list)
+
+
+class RunSummary(RunResponse):
+    product_name: str
+    mode: str
+
+
+class CheckResultDetail(BaseModel):
+    id: str
+    run_id: str
+    product_id: str
+    competitor_id: str | None
+    platform: str
+    pincode: str
+    in_stock: bool | None
+    price: float | None
+    mrp: float | None
+    eta_minutes: int | None
+    rating: float | None
+    status: str
+    error: str | None
+    screenshot_url: str | None
+    checked_at: datetime
+    agent: dict | None
+
+
+class TinyFishUsage(BaseModel):
+    mode: str
+    concurrency: int
+    credits_today: int
+    daily_budget: int | None
+    runs_today: int
+    success_rate_7d: float | None

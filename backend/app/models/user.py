@@ -24,7 +24,9 @@ class User(UUIDPrimaryKeyMixin, Base):
 
 class Subscription(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "subscriptions"
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
     plan: Mapped[str] = mapped_column(String(16), default="free")
     status: Mapped[str] = mapped_column(String(32), default="active")
     renews_at: Mapped[datetime | None] = mapped_column(
@@ -34,7 +36,9 @@ class Subscription(UUIDPrimaryKeyMixin, Base):
 
 class UserSettings(Base):
     __tablename__ = "user_settings"
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     briefing_time: Mapped[str] = mapped_column(String(5), default="09:00")
     quiet_hours_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
     quiet_hours_end: Mapped[str | None] = mapped_column(String(5), nullable=True)

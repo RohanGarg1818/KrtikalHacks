@@ -1,14 +1,55 @@
 """TinyFish client interface.
 
 The runner and every other service depend only on this module. All
-provider-specific HTTP details live in ``http_client.py``.
+provider-specific HTTP details live in ``http_client.py``; the simulated
+agent lives in ``mock_client.py``.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable
+from typing import Literal, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, Field
+
+AgentStepKind = Literal[
+    "session",
+    "navigate",
+    "location",
+    "search",
+    "open",
+    "extract",
+    "checkout",
+    "screenshot",
+    "done",
+    "error",
+]
+
+
+class AgentStep(TypedDict):
+    """One step of a web-agent session.
+
+    ``ms`` is the elapsed time since the session started at the moment the
+    step began, so a step's duration is the next step's ``ms`` minus its own.
+    """
+
+    index: int
+    kind: AgentStepKind
+    label: str
+    detail: str | None
+    at: str
+    ms: int
+
+
+StepCallback = Callable[[AgentStep], Awaitable[None]]
+
+
+class TruePrice(TypedDict):
+    item: float
+    handling_fee: float
+    delivery_fee: float
+    offer: float
+    final: float
 
 
 class CheckResult(BaseModel):
@@ -21,6 +62,7 @@ class CheckResult(BaseModel):
     eta_minutes: int | None = Field(default=None, ge=0)
     rating: float | None = Field(default=None, ge=0, le=5)
     screenshot_bytes: bytes | None = None
+    screenshot_content_type: str = "image/png"
     screenshot_url: str | None = None
     credits_used: int = Field(default=1, ge=0)
     raw: dict = Field(default_factory=dict)
@@ -44,13 +86,39 @@ class FetchResult(BaseModel):
 
 
 class TinyFishError(Exception):
-    """A TinyFish check, search, or fetch failed after retries."""
+    """A TinyFish check, search, or fetch failed.
+
+    ``retryable`` is False when another attempt cannot help (deterministic
+    outcomes, client errors, timeouts that already consumed the budget).
+    ``credits_used`` is what the failed attempt still cost, and ``agent``
+    carries the session trace so failed jobs can be replayed.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        credits_used: int = 0,
+        agent: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.credits_used = credits_used
+        self.agent = agent
 
 
 @runtime_checkable
 class TinyFishClient(Protocol):
+    mode: Literal["simulated", "live"]
+
     async def check(
-        self, platform: str, pincode: str, query: str, url: str | None = None
+        self,
+        platform: str,
+        pincode: str,
+        query: str,
+        url: str | None = None,
+        on_step: StepCallback | None = None,
     ) -> CheckResult: ...
 
     async def search(self, query: str) -> list[SearchHit]: ...
@@ -58,8 +126,15 @@ class TinyFishClient(Protocol):
     async def fetch(self, url: str) -> FetchResult: ...
 
 
+def tinyfish_mode() -> Literal["simulated", "live"]:
+    """Which client ``get_tinyfish_client`` returns under the current settings."""
+    from ...config import get_settings
+
+    return "live" if get_settings().tinyfish_enabled else "simulated"
+
+
 def get_tinyfish_client() -> TinyFishClient:
-    """Return the real client when fully configured, otherwise the mock."""
+    """Return the real client when fully configured, otherwise the simulator."""
     from ...config import get_settings
     from .mock_client import MockTinyFishClient
 
@@ -68,7 +143,8 @@ def get_tinyfish_client() -> TinyFishClient:
         if not settings.tinyfish_agent_base_url:
             raise TinyFishError(
                 "TINYFISH_AGENT_BASE_URL must be set when the TinyFish API key is "
-                "enabled; see .env.example"
+                "enabled; see .env.example",
+                retryable=False,
             )
         from .http_client import HttpTinyFishClient
 

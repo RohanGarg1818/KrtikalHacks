@@ -1,12 +1,17 @@
 """Prompt builders for the Gemini provider.
 
 Every prompt embeds the evidence numbers so the model can only summarise what
-we measured, plus the guardrail instructions it must follow.
+we measured, plus the guardrail instructions it must follow. Builders return
+``(system_instruction, contents)`` where ``contents`` is a list of structured
+turns (``{"role": "user" | "model", "parts": [{"text": ...}]}``).
 """
 
 from __future__ import annotations
 
 import json
+
+Turn = dict
+HISTORY_TURNS = 6
 
 GUARDRAIL_RULES = """\
 You are ShelfSense AI, an assistant that helps quick-commerce sellers in India
@@ -23,29 +28,40 @@ def _context_block(context: dict) -> str:
     return json.dumps(context, default=str, ensure_ascii=False)
 
 
-def summarize_prompt(context: dict) -> tuple[str, str]:
+def _turn(role: str, text: str) -> Turn:
+    return {"role": role, "parts": [{"text": text}]}
+
+
+def _single(text: str) -> list[Turn]:
+    return [_turn("user", text)]
+
+
+def summarize_prompt(context: dict) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
         + "\nTask: write a 2-3 sentence seller-facing summary of the product's "
         "price and stock position. Reply with JSON: "
         '{"summary_text": "..."}'
     )
-    return system, f"Context:\n{_context_block(context)}"
+    return system, _single(f"Context:\n{_context_block(context)}")
 
 
-def recommend_prompt(context: dict) -> tuple[str, str]:
+def recommend_prompt(context: dict) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
         + "\nTask: propose up to 3 concrete recommendations. Priority must be "
         '"high", "medium", or "low". Every recommendation must cite evidence '
-        "from the context. Reply with JSON: "
-        '{"recommendations": [{"priority": "...", "action_text": "...", '
-        '"impact_text": "...", "evidence": {...}}]}'
+        "from the context. When a recommendation proposes a new price, put that "
+        "number in evidence.proposed_price; it must respect context.pricing "
+        "(floor_price, cost_price plus min_margin_pct, max_change_pct versus "
+        "avg_price). Otherwise set evidence.proposed_price to null. Reply with "
+        'JSON: {"recommendations": [{"priority": "...", "action_text": "...", '
+        '"impact_text": "...", "evidence": {"proposed_price": number|null, ...}}]}'
     )
-    return system, f"Context:\n{_context_block(context)}"
+    return system, _single(f"Context:\n{_context_block(context)}")
 
 
-def reviews_prompt(context: dict) -> tuple[str, str]:
+def reviews_prompt(context: dict) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
         + "\nTask: list what customers likely love and complain about, derived "
@@ -53,12 +69,12 @@ def reviews_prompt(context: dict) -> tuple[str, str]:
         "(3-5 short bullet phrases each). Reply with JSON: "
         '{"loves": ["..."], "complaints": ["..."]}'
     )
-    return system, f"Context:\n{_context_block(context)}"
+    return system, _single(f"Context:\n{_context_block(context)}")
 
 
 def chat_prompt(
     context: dict, message: str, history: list[dict]
-) -> tuple[str, str]:
+) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
         + "\nTask: answer the seller's question about their product data. "
@@ -67,23 +83,37 @@ def chat_prompt(
         "Reply with JSON: "
         '{"reply": "...", "actions": [{"label": "...", "path": "..."}], '
         '"evidence": [{"metric": "...", "value": ...}]}. '
-        "Action paths must start with /products/ or be from the context."
+        "Action paths must be in-app paths such as /products/<id>, "
+        "/products/<id>/settings, /heatmap?product=<id>, /dashboard, /agents."
+        f"\n\nContext:\n{_context_block(context)}"
     )
-    lines = [f"Context:\n{_context_block(context)}", "\nConversation so far:"]
-    for entry in history[-6:]:
-        lines.append(f"{entry.get('role', 'user')}: {entry.get('content', '')}")
-    lines.append(f"user: {message}")
-    return system, "\n".join(lines)
+    contents: list[Turn] = []
+    for entry in history[-HISTORY_TURNS:]:
+        text = str(entry.get("content") or "").strip()
+        if not text:
+            continue
+        role = "model" if entry.get("role") == "assistant" else "user"
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"].append({"text": text})
+        else:
+            contents.append(_turn(role, text))
+    if contents and contents[-1]["role"] == "user":
+        contents[-1]["parts"].append({"text": message})
+    else:
+        contents.append(_turn("user", message))
+    return system, contents
 
 
-def parse_alert_rule_prompt(text: str) -> tuple[str, str]:
+def parse_alert_rule_prompt(text: str) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
         + "\nTask: convert the seller's natural-language alert request into a "
-        "structured rule. kind must be one of oos_any, rival_oos, "
-        "price_change_pct, rating_below, custom. threshold is a number when "
-        "relevant (percent for price, rating points for rating). Reply with "
-        'JSON: {"kind": "...", "threshold": ..., "rule_text": "...", '
-        '"rule_json": {...}}'
+        "structured rule. kind must be one of oos_any, oos_area, rival_oos, "
+        "price_change_pct, price_gap_pct, rating_below, custom. Use oos_area "
+        "when the request names places: put area or locality names in "
+        "rule_json.areas and any 6-digit pincodes in rule_json.pincodes. "
+        "threshold is a number when relevant (percent for price, rating points "
+        'for rating). Reply with JSON: {"kind": "...", "threshold": ..., '
+        '"rule_text": "...", "rule_json": {"areas": [...], "pincodes": [...]}}'
     )
-    return system, f"Request:\n{text}"
+    return system, _single(f"Request:\n{text}")

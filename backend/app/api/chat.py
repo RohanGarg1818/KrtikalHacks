@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models.chat import ChatConversation, ChatMessage
+from ..models.checks import CheckResult
 from ..models.product import Product
 from ..models.user import Subscription, User
 from ..schemas.chat import (
@@ -34,6 +37,13 @@ router = APIRouter(tags=["chat"])
 
 MAX_MESSAGES_PER_CONVERSATION = 100
 HISTORY_WINDOW = 20
+# An unfocused chat is grounded in at most this many recently checked products.
+UNFOCUSED_PRODUCT_LIMIT = 5
+# In-app destinations a chat action may link to; anything else is dropped.
+ACTION_PATH = re.compile(
+    r"^/(dashboard|products(/[\w-]+(/(settings|telegram|heatmap))?)?|heatmap|help"
+    r"|settings|agents)(\?.*)?$"
+)
 
 EMPTY_CONTEXT = {
     "product_id": None,
@@ -54,11 +64,40 @@ EMPTY_CONTEXT = {
 }
 
 
+def safe_actions(actions: list[dict]) -> list[dict]:
+    return [
+        action
+        for action in actions
+        if isinstance(action.get("path"), str) and ACTION_PATH.match(action["path"])
+    ]
+
+
 async def _unfocused_context(session: AsyncSession, user_id: str, message: str) -> dict:
     """Ground an "all products" chat in the product the message names, else the one
-    with the most stock-outs, so answers carry real numbers instead of blanks."""
+    with the most stock-outs, so answers carry real numbers instead of blanks.
+
+    Only the most recently checked products are considered, so the cost of a
+    message does not grow with the size of the catalogue.
+    """
+    last_checked = (
+        select(CheckResult.product_id, func.max(CheckResult.checked_at).label("at"))
+        .group_by(CheckResult.product_id)
+        .subquery()
+    )
     products = list(
-        (await session.scalars(select(Product).where(Product.user_id == user_id))).all()
+        (
+            await session.scalars(
+                select(Product)
+                .outerjoin(last_checked, last_checked.c.product_id == Product.id)
+                .where(Product.user_id == user_id)
+                .order_by(
+                    last_checked.c.at.is_(None),
+                    last_checked.c.at.desc(),
+                    Product.created_at.desc(),
+                )
+                .limit(UNFOCUSED_PRODUCT_LIMIT)
+            )
+        ).all()
     )
     text = message.lower()
 
@@ -160,7 +199,7 @@ async def _answer_message(
         conversation_id=conversation.id,
         role="assistant",
         content=result.reply[:8000],
-        actions=[action.model_dump() for action in result.actions],
+        actions=safe_actions([action.model_dump() for action in result.actions]),
         evidence=[item.model_dump() for item in result.evidence],
     )
     session.add(user_message)

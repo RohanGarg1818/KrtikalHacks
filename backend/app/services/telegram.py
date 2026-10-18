@@ -4,15 +4,21 @@ Everything degrades gracefully: without TELEGRAM_BOT_TOKEN the link-code API
 still works (codes are stored for later redemption) but the bot never starts
 and delivery is a no-op logger. All bot wiring lives behind this module so the
 rest of the app never imports python-telegram-bot.
+
+Link codes carry ~69 bits of randomness, are single-use (redeemed with a
+conditional UPDATE), and failed redemptions are rate-limited per chat.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import timedelta
 
-from sqlalchemy import delete, select
+from fastapi import HTTPException
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -20,20 +26,22 @@ from ..db import SessionLocal
 from ..models.base import utcnow
 from ..models.intelligence import Recommendation
 from ..models.product import Product
-from ..models.telegram import TelegramLink, TelegramLinkCode
+from ..models.telegram import TelegramLink, TelegramLinkAttempt, TelegramLinkCode
 from .ai import get_ai_provider, with_fallback
 from .intelligence import build_context, decide_recommendation
 
 logger = logging.getLogger("shelfsense.telegram")
 
 LINK_CODE_TTL_MINUTES = 10
-LINK_CODE_WORDS = (
-    "MILK", "SHELF", "CART", "PICK", "DEAL", "ZEBRA", "TIGER", "LOTUS",
-    "MANGO", "PEPPER",
-)
+# Unambiguous uppercase alphabet (no 0/O, 1/I/L, U): 30 symbols x 14 ≈ 68.7 bits.
+LINK_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+LINK_CODE_GROUP = 7
+MAX_FAILED_ATTEMPTS = 5
+ATTEMPT_WINDOW = timedelta(minutes=10)
+CHAT_PRODUCT_LIMIT = 5
+GROUP_CHAT_TYPES = {"group", "supergroup"}
+_WORD_RE = re.compile(r"[a-z0-9]+")
 _bot_application = None
-
-RETRYABLE_TELEGRAM_ERRORS: tuple[type[Exception], ...] = ()
 
 
 def _load_retryable_errors() -> tuple[type[Exception], ...]:
@@ -49,9 +57,11 @@ RETRYABLE_TELEGRAM_ERRORS = _load_retryable_errors()
 
 
 def generate_link_code_value() -> str:
-    number = secrets.randbelow(10000)
-    word = secrets.choice(LINK_CODE_WORDS)
-    return f"SS-{number:04d}-{word}"
+    groups = (
+        "".join(secrets.choice(LINK_CODE_ALPHABET) for _ in range(LINK_CODE_GROUP))
+        for _ in range(2)
+    )
+    return "SS-" + "-".join(groups)
 
 
 async def create_link_code(
@@ -61,10 +71,15 @@ async def create_link_code(
     product_id: str,
     chat_type: str = "personal",
 ) -> TelegramLinkCode:
-    from sqlalchemy.exc import IntegrityError
-
+    """Issue a fresh code; the product's previous unused codes stop working."""
     stored_type = "group" if chat_type == "group" else "private"
     for _attempt in range(5):
+        await session.execute(
+            delete(TelegramLinkCode).where(
+                TelegramLinkCode.product_id == product_id,
+                TelegramLinkCode.used_at.is_(None),
+            )
+        )
         code = TelegramLinkCode(
             code=generate_link_code_value(),
             user_id=user_id,
@@ -83,13 +98,34 @@ async def create_link_code(
     raise RuntimeError("Could not generate a unique Telegram link code")
 
 
-def build_deeplink(code: str, chat_type: str = "personal") -> str:
-    settings = get_settings()
-    username = settings.telegram_bot_username
+def build_deeplink(code: str, chat_type: str = "personal") -> str | None:
+    """t.me link that pre-fills ``/start <code>``; None when the bot username is unknown."""
+    username = get_settings().telegram_bot_username.strip().lstrip("@")
     if not username:
-        return f"/start {code}"
+        return None
     param = "startgroup" if chat_type == "group" else "start"
     return f"https://t.me/{username}?{param}={code}"
+
+
+async def link_attempts_exhausted(session: AsyncSession, chat_id: str) -> bool:
+    """True once a chat has failed ``MAX_FAILED_ATTEMPTS`` redemptions in the window."""
+    failures = await session.scalar(
+        select(func.count(TelegramLinkAttempt.id)).where(
+            TelegramLinkAttempt.chat_id == chat_id,
+            TelegramLinkAttempt.attempted_at >= utcnow() - ATTEMPT_WINDOW,
+        )
+    )
+    return int(failures or 0) >= MAX_FAILED_ATTEMPTS
+
+
+async def _record_failed_attempt(session: AsyncSession, chat_id: str) -> None:
+    session.add(TelegramLinkAttempt(chat_id=chat_id))
+    await session.execute(
+        delete(TelegramLinkAttempt).where(
+            TelegramLinkAttempt.attempted_at < utcnow() - ATTEMPT_WINDOW
+        )
+    )
+    await session.commit()
 
 
 async def redeem_link_code(
@@ -98,14 +134,26 @@ async def redeem_link_code(
     code_value: str,
     chat_id: str,
     chat_title: str | None = None,
+    telegram_user_id: str | None = None,
 ) -> TelegramLink | None:
-    """Exchange a code for a TelegramLink; returns None when invalid."""
-    row = await session.get(TelegramLinkCode, code_value)
-    now = utcnow()
-    if row is None or row.used_at is not None or row.expires_at < now:
+    """Exchange a code for a TelegramLink; None when invalid, used, expired, or rate-limited."""
+    if await link_attempts_exhausted(session, chat_id):
         return None
-    product = await session.get(Product, row.product_id)
-    if product is None:
+    now = utcnow()
+    claimed = await session.execute(
+        update(TelegramLinkCode)
+        .where(
+            TelegramLinkCode.code == code_value,
+            TelegramLinkCode.used_at.is_(None),
+            TelegramLinkCode.expires_at > now,
+        )
+        .values(used_at=now)
+    )
+    row = await session.get(TelegramLinkCode, code_value) if claimed.rowcount else None
+    product = await session.get(Product, row.product_id) if row is not None else None
+    if row is None or product is None:
+        await session.rollback()
+        await _record_failed_attempt(session, chat_id)
         return None
     existing = await session.scalar(
         select(TelegramLink).where(
@@ -114,7 +162,6 @@ async def redeem_link_code(
         )
     )
     if existing is not None:
-        row.used_at = now
         await session.commit()
         return existing
     link = TelegramLink(
@@ -122,21 +169,51 @@ async def redeem_link_code(
         product_id=row.product_id,
         chat_id=chat_id,
         chat_title=chat_title,
+        linked_by_telegram_user_id=telegram_user_id,
         alert_types=[],
     )
     session.add(link)
-    row.used_at = now
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # A concurrent redemption linked the same chat first; the code stays used.
+        await session.rollback()
+        return await session.scalar(
+            select(TelegramLink).where(
+                TelegramLink.product_id == row.product_id,
+                TelegramLink.chat_id == chat_id,
+            )
+        )
     await session.refresh(link)
     return link
 
 
+async def unlink_link(session: AsyncSession, link_id: str) -> bool:
+    """Delete one link by id; the chat stays linked to its other products."""
+    result = await session.execute(delete(TelegramLink).where(TelegramLink.id == link_id))
+    await session.commit()
+    return bool(result.rowcount)
+
+
 async def unlink_chat(session: AsyncSession, *, chat_id: str) -> int:
+    """Bot ``/stop``: disconnect the chat from every product."""
     result = await session.execute(
         delete(TelegramLink).where(TelegramLink.chat_id == chat_id)
     )
     await session.commit()
     return result.rowcount or 0
+
+
+async def chat_links(session: AsyncSession, chat_id: str) -> list[TelegramLink]:
+    return list(
+        (
+            await session.scalars(
+                select(TelegramLink)
+                .where(TelegramLink.chat_id == chat_id)
+                .order_by(TelegramLink.connected_at.desc())
+            )
+        ).all()
+    )
 
 
 def get_bot_application():
@@ -197,6 +274,7 @@ async def send_recommendation_message(
 
 async def handle_approve_callback(update, context) -> bool:
     """Process approve:<rec_id>; returns True when the callback was handled."""
+    del context
     query = update.callback_query
     chat = update.effective_chat
     if query is None or chat is None or not query.data:
@@ -205,25 +283,40 @@ async def handle_approve_callback(update, context) -> bool:
         return False
     recommendation_id = query.data.split(":", 1)[1]
     async with SessionLocal() as session:
-        link = await session.scalar(
-            select(TelegramLink).where(TelegramLink.chat_id == str(chat.id))
-        )
-        if link is None:
-            await query.answer("This chat is not linked to ShelfSense.")
-            return True
         recommendation = await session.get(Recommendation, recommendation_id)
         if recommendation is None:
             await query.answer("Recommendation no longer exists.")
             return True
-        product = await session.get(Product, recommendation.product_id)
-        if product is None or product.user_id != link.user_id:
-            await query.answer("Not authorised for this chat.")
+        link = await session.scalar(
+            select(TelegramLink).where(
+                TelegramLink.chat_id == str(chat.id),
+                TelegramLink.product_id == recommendation.product_id,
+            )
+        )
+        if link is None:
+            await query.answer("This chat is not linked to that product.")
             return True
-        if recommendation.status == "pending":
+        if chat.type in GROUP_CHAT_TYPES:
+            actor = update.effective_user
+            if actor is None or str(actor.id) != link.linked_by_telegram_user_id:
+                await query.answer(
+                    "Only the person who connected this group can approve."
+                )
+                return True
+        if recommendation.status != "pending":
+            await query.answer(f"Already {recommendation.status}.")
+            await query.edit_message_text(
+                f"{recommendation.action_text}\n\nStatus: {recommendation.status}."
+            )
+            return True
+        try:
             await decide_recommendation(
                 session, recommendation, decision="approved", decided_via="telegram"
             )
-        await query.edit_message_text("Approved ✓")
+        except HTTPException as exc:
+            await query.answer(str(exc.detail)[:200])
+            return True
+        await query.edit_message_text(f"{recommendation.action_text}\n\nApproved ✓")
         await query.answer("Recommendation approved.")
     return True
 
@@ -240,12 +333,20 @@ async def _handle_start(update, context) -> None:
             "Send /start <code> with the code from your ShelfSense product page."
         )
         return
+    sender = update.effective_user
     async with SessionLocal() as session:
+        if await link_attempts_exhausted(session, str(chat.id)):
+            await message.reply_text(
+                "Too many invalid codes from this chat. Wait 10 minutes and try "
+                "again with a fresh code."
+            )
+            return
         link = await redeem_link_code(
             session,
             code_value=args[0].strip(),
             chat_id=str(chat.id),
             chat_title=chat.title,
+            telegram_user_id=str(sender.id) if sender is not None else None,
         )
         if link is None:
             await message.reply_text(
@@ -259,20 +360,14 @@ async def _handle_start(update, context) -> None:
 
 
 async def _handle_status(update, context) -> None:
-    """Bot /status: latest summary for products linked to this chat."""
+    """Bot /status: latest numbers for every product linked to this chat."""
     del context
     message = update.effective_message
     chat = update.effective_chat
     if message is None or chat is None:
         return
     async with SessionLocal() as session:
-        links = list(
-            (
-                await session.scalars(
-                    select(TelegramLink).where(TelegramLink.chat_id == str(chat.id))
-                )
-            ).all()
-        )
+        links = await chat_links(session, str(chat.id))
         if not links:
             await message.reply_text(
                 "This chat is not connected. Use /start <code> from your "
@@ -280,7 +375,7 @@ async def _handle_status(update, context) -> None:
             )
             return
         lines: list[str] = []
-        for link in links[:5]:
+        for link in links[:CHAT_PRODUCT_LIMIT]:
             product = await session.get(Product, link.product_id)
             name = product.name if product else "Unknown product"
             context_data = await build_context(session, link.product_id)
@@ -289,19 +384,34 @@ async def _handle_status(update, context) -> None:
                 continue
             avg = context_data.get("avg_price")
             rival = context_data.get("cheapest_rival")
-            stock = context_data.get("in_stock")
-            total = context_data.get("total_pins")
-            lines.append(
-                f"{name}: avg ₹{avg:.2f} (rival ₹{rival:.2f}), "
-                f"{stock}/{total} pins in stock."
-                if avg is not None and rival is not None
-                else f"{name}: {stock or 0}/{total or 0} pins in stock."
-            )
+            stock = context_data.get("in_stock") or 0
+            total = context_data.get("total_pins") or 0
+            if avg is not None and rival is not None:
+                lines.append(
+                    f"{name}: avg ₹{avg:.2f} (rival ₹{rival:.2f}), "
+                    f"{stock}/{total} pins in stock."
+                )
+            else:
+                lines.append(f"{name}: {stock}/{total} pins in stock.")
+        if len(links) > CHAT_PRODUCT_LIMIT:
+            lines.append(f"…and {len(links) - CHAT_PRODUCT_LIMIT} more products.")
     await message.reply_text("\n".join(lines))
 
 
+def products_for_question(products: list[Product], question: str) -> list[Product]:
+    """Products whose name words appear in the question; all of them when none do."""
+    asked = set(_WORD_RE.findall(question.lower()))
+    matched = [
+        product
+        for product in products
+        if {word for word in _WORD_RE.findall(product.name.lower()) if len(word) > 2}
+        & asked
+    ]
+    return matched or products
+
+
 async def _handle_ask(update, context) -> None:
-    """Bot /ask <question>: answer via the AI chat scoped to linked products."""
+    """Bot /ask <question>: answer via the AI chat for the products it concerns."""
     message = update.effective_message
     chat = update.effective_chat
     if message is None or chat is None:
@@ -311,23 +421,34 @@ async def _handle_ask(update, context) -> None:
         await message.reply_text("Usage: /ask <question about your products>")
         return
     async with SessionLocal() as session:
-        link = await session.scalar(
-            select(TelegramLink).where(TelegramLink.chat_id == str(chat.id))
-        )
-        if link is None:
+        links = await chat_links(session, str(chat.id))
+        if not links:
             await message.reply_text(
                 "This chat is not connected. Use /start <code> first."
             )
             return
-        context_data = await build_context(session, link.product_id)
-        if context_data is None:
-            await message.reply_text("No check data yet for your linked product.")
-            return
+        products = [
+            product
+            for link in links[:CHAT_PRODUCT_LIMIT]
+            if (product := await session.get(Product, link.product_id)) is not None
+        ]
         provider = get_ai_provider()
-        result, _source = await with_fallback(
-            provider, "chat", context_data, question, []
-        )
-    await message.reply_text(result.reply[:4000])
+        answers: list[str] = []
+        targets = products_for_question(products, question)
+        for product in targets:
+            context_data = await build_context(session, product.id)
+            if context_data is None:
+                continue
+            result, _source = await with_fallback(
+                provider, "chat", context_data, question, []
+            )
+            answers.append(
+                result.reply if len(targets) == 1 else f"{product.name}: {result.reply}"
+            )
+    if not answers:
+        await message.reply_text("No check data yet for your linked products.")
+        return
+    await message.reply_text("\n\n".join(answers)[:4000])
 
 
 async def _handle_stop(update, context) -> None:

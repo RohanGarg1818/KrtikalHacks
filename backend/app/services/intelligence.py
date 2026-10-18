@@ -2,15 +2,23 @@
 
 Every generated artefact is grounded in measured numbers (KPIs, heatmap,
 weekly stats) and passes pure-Python guardrails before being persisted.
+
+Price guardrails act on the structured ``evidence.proposed_price`` (or, for
+free text, an explicit "set/drop/raise … to ₹X" proposal). A proposal must
+respect the floor price, cost + minimum margin, the max change versus the
+current own average price, and the max change accumulated by approvals of the
+same product today. Approval re-checks all of this against fresh numbers.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import re
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from fastapi import HTTPException
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.checks import ChangeEvent, CheckResult
@@ -20,6 +28,7 @@ from .ai import get_ai_provider, with_fallback
 from .ai.base import RecommendationCandidate
 from .heatmap import compute_heatmap
 from .insights import compute_overview, compute_weekly
+from .plans import credit_day_start
 
 logger = logging.getLogger("shelfsense.intelligence")
 
@@ -46,7 +55,12 @@ BANNED_PHRASES = (
     "undercut illegally",
 )
 
-_RUPEE_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_PROPOSAL_RE = re.compile(
+    r"\b(?:drop|reduce|cut|lower|decrease|raise|increase|hike|set|nudge|move|change|"
+    r"price|match|bring)\w*\b[^₹\n]{0,40}?\b(?:to|at)\s*(?:₹|Rs\.?|INR)\s*"
+    r"(\d[\d,]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 _PRESCRIPTIVE_PCT_RE = re.compile(
     r"(drop|reduce|cut|lower|decrease|raise|increase|hike)\D{0,40}?"
     r"(\d+(?:\.\d+)?)\s*%",
@@ -99,7 +113,8 @@ async def build_context(
         "total_pins": kpis["in_stock"]["total"],
         "rating": kpis["rating"]["value"],
         "price_gap_pins": heatmap["summary"]["price_gap"],
-        "stale_pins": heatmap["summary"]["stale"],
+        "stale_pins": heatmap["summary"]["stale"] - heatmap["summary"]["failed"],
+        "failed_pins": heatmap["summary"]["failed"],
         "hot_zone_count": len(heatmap["hot_zones"]),
         "oos_pins": oos_pins,
         "oos_platforms": oos_platforms,
@@ -108,6 +123,7 @@ async def build_context(
         "last_week_avg_price": weekly["last_week"]["avg_price"],
         "this_week_oos_count": weekly["this_week"]["oos_count"],
         "recommendation_preview": top_pending or "",
+        "pricing": pricing_rules(product),
         "recent_changes": [
             {
                 "kind": row.kind,
@@ -136,39 +152,89 @@ def _gap_from_context(context: dict) -> float | None:
     return round((avg_price / rival - 1) * 100, 2)
 
 
-def _pricing_violation(
-    text: str, pricing: dict, *, current_price: float | None
-) -> str | None:
-    """Return a reason when text proposes a price outside the product's rules.
+class RecommendationConflict(HTTPException):
+    """A decision that the recommendation's state or the guardrails forbid (409)."""
 
-    Brief Section 8: drop recommendations below floor_price, below
-    cost_price*(1+min_margin_pct/100), or changing price more than
-    max_change_pct.
+    def __init__(self, message: str) -> None:
+        super().__init__(status_code=409, detail=message)
+
+
+def pricing_rules(product: Product) -> dict:
+    return {
+        "floor_price": product.floor_price,
+        "cost_price": product.cost_price,
+        "min_margin_pct": product.min_margin_pct,
+        "max_change_pct": product.max_change_pct,
+    }
+
+
+def parse_rupees(raw: str) -> float:
+    """Parse ``1,299.50`` (Indian digit grouping included) as 1299.5."""
+    return float(raw.replace(",", ""))
+
+
+def proposed_price_of(text: str, evidence: dict) -> float | None:
+    """The concrete price a recommendation proposes, if any.
+
+    Structured ``evidence.proposed_price`` wins; otherwise an explicit
+    "set/drop/raise … to ₹X" phrase counts. Mentions such as "cheapest
+    rival (₹X)" are context, not proposals.
     """
+    value = evidence.get("proposed_price")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) else math.nan
+    match = _PROPOSAL_RE.search(text)
+    return parse_rupees(match.group(1)) if match else None
+
+
+def change_pct(price: float, current_price: float | None) -> float | None:
+    if not current_price:
+        return None
+    return round(abs(price / current_price - 1) * 100, 2)
+
+
+def price_violation(
+    price: float,
+    pricing: dict,
+    *,
+    current_price: float | None,
+    approved_change_pct: float = 0.0,
+) -> str | None:
+    """Reason a proposed price breaks the product's pricing rules, else None."""
+    if not math.isfinite(price) or price <= 0:
+        return f"proposed price {price} is not a valid price"
     floor_price = pricing.get("floor_price")
     cost_price = pricing.get("cost_price")
     min_margin_pct = pricing.get("min_margin_pct")
     max_change_pct = pricing.get("max_change_pct")
-    for raw in _RUPEE_PRICE_RE.findall(text):
-        price = float(raw)
-        if floor_price is not None and price < float(floor_price):
-            return f"price {price} is below floor_price {floor_price}"
-        if cost_price is not None and min_margin_pct is not None:
-            minimum = float(cost_price) * (1 + float(min_margin_pct) / 100)
-            if price < minimum - 0.005:
-                return (
-                    f"price {price} is below cost+margin minimum {minimum:.2f}"
-                )
-        if current_price and max_change_pct is not None:
-            change_pct = abs(price / current_price - 1) * 100
-            if change_pct > float(max_change_pct) + 0.005:
-                return (
-                    f"price {price} changes {change_pct:.1f}% from current "
-                    f"{current_price} (max {max_change_pct}%)"
-                )
+    if floor_price is not None and price < float(floor_price):
+        return f"price {price} is below floor_price {floor_price}"
+    if cost_price is not None and min_margin_pct is not None:
+        minimum = float(cost_price) * (1 + float(min_margin_pct) / 100)
+        if price < minimum - 0.005:
+            return f"price {price} is below cost+margin minimum {minimum:.2f}"
+    moved = change_pct(price, current_price)
+    if moved is not None and max_change_pct is not None:
+        if moved > float(max_change_pct) + 0.005:
+            return (
+                f"price {price} changes {moved:.1f}% from current "
+                f"{current_price} (max {max_change_pct}%)"
+            )
+        if moved + approved_change_pct > float(max_change_pct) + 0.005:
+            return (
+                f"price {price} would bring today's approved changes to "
+                f"{moved + approved_change_pct:.1f}% (max {max_change_pct}%)"
+            )
+    return None
+
+
+def _percent_violation(text: str, pricing: dict) -> str | None:
+    max_change_pct = pricing.get("max_change_pct")
+    if max_change_pct is None:
+        return None
     for match in _PRESCRIPTIVE_PCT_RE.finditer(text):
         pct = float(match.group(2))
-        if max_change_pct is not None and pct > float(max_change_pct) + 0.005:
+        if pct > float(max_change_pct) + 0.005:
             return (
                 f"proposes {pct}% price change above max_change_pct {max_change_pct}"
             )
@@ -193,6 +259,7 @@ def apply_recommendation_guardrails(
     )
     pricing = pricing or {}
     current_price = context.get("avg_price")
+    approved_today = float(pricing.get("approved_change_pct_today") or 0.0)
     cleaned: list[dict] = []
     seen = {text.strip().lower() for text in pending_texts}
     for candidate in candidates:
@@ -204,9 +271,21 @@ def apply_recommendation_guardrails(
             continue
         if len(action) < MIN_ACTION_LENGTH:
             continue
-        violation = _pricing_violation(
-            f"{action} {impact}", pricing, current_price=current_price
-        )
+        evidence = dict(candidate.evidence)
+        proposal = proposed_price_of(f"{action} {impact}", evidence)
+        violation = _percent_violation(f"{action} {impact}", pricing)
+        if proposal is not None:
+            violation = violation or price_violation(
+                proposal,
+                pricing,
+                current_price=current_price,
+                approved_change_pct=approved_today,
+            )
+            evidence["proposed_price"] = round(proposal, 2)
+            evidence["base_price"] = current_price
+            evidence["change_pct"] = change_pct(proposal, current_price)
+        else:
+            evidence["proposed_price"] = None
         if violation is not None:
             logger.info(
                 "guardrail dropped price-violating recommendation (%s): %s",
@@ -228,7 +307,7 @@ def apply_recommendation_guardrails(
                 "priority": priority,
                 "action_text": action[:ACTION_TEXT_LIMIT],
                 "impact_text": impact[:IMPACT_TEXT_LIMIT],
-                "evidence": dict(candidate.evidence),
+                "evidence": evidence,
             }
         )
         if len(cleaned) >= RECOMMENDATION_LIMIT:
@@ -290,10 +369,10 @@ async def generate_recommendations(
         pending_texts=pending_texts,
         context=context,
         pricing={
-            "floor_price": product.floor_price,
-            "cost_price": product.cost_price,
-            "min_margin_pct": product.min_margin_pct,
-            "max_change_pct": product.max_change_pct,
+            **pricing_rules(product),
+            "approved_change_pct_today": await approved_change_pct_today(
+                session, product.id
+            ),
         },
     )[:room]
     rows = [
@@ -374,6 +453,28 @@ async def refresh_intelligence(
         logger.exception("intelligence refresh failed for product %s", product_id)
 
 
+async def approved_change_pct_today(session: AsyncSession, product_id: str) -> float:
+    """Sum of price moves (in %) approved for this product since UTC midnight."""
+    evidence_rows = (
+        await session.scalars(
+            select(Recommendation.evidence).where(
+                Recommendation.product_id == product_id,
+                Recommendation.status == "approved",
+                Recommendation.decided_at >= credit_day_start(),
+            )
+        )
+    ).all()
+    total = 0.0
+    for evidence in evidence_rows:
+        moved = (evidence or {}).get("change_pct")
+        if isinstance(moved, (int, float)) and not isinstance(moved, bool):
+            total += abs(float(moved))
+    return round(total, 2)
+
+
+DECISIONS = ("approved", "dismissed")
+
+
 async def decide_recommendation(
     session: AsyncSession,
     recommendation: Recommendation,
@@ -381,11 +482,54 @@ async def decide_recommendation(
     decision: str,
     decided_via: str = "web",
 ) -> Recommendation:
-    recommendation.status = decision
-    recommendation.decided_via = decided_via
-    recommendation.decided_at = datetime.now(UTC)
+    """Move a pending recommendation to approved/dismissed.
+
+    Raises RecommendationConflict (HTTP 409) when it is no longer pending or
+    when an approval's proposed price fails the guardrails on fresh numbers.
+    """
+    if decision not in DECISIONS:
+        raise ValueError(f"Unknown decision: {decision}")
+    if recommendation.status != "pending":
+        raise RecommendationConflict(
+            f"This recommendation is already {recommendation.status}"
+        )
+    evidence = dict(recommendation.evidence or {})
+    proposal = evidence.get("proposed_price")
+    if decision == "approved" and isinstance(proposal, (int, float)):
+        product = await session.get(Product, recommendation.product_id)
+        overview = await compute_overview(session, recommendation.product_id)
+        current_price = overview["kpis"]["avg_price"]["value"]
+        violation = price_violation(
+            float(proposal),
+            pricing_rules(product) if product is not None else {},
+            current_price=current_price,
+            approved_change_pct=await approved_change_pct_today(
+                session, recommendation.product_id
+            ),
+        )
+        if violation is not None:
+            raise RecommendationConflict(f"Blocked by pricing guardrails: {violation}")
+        evidence["base_price"] = current_price
+        evidence["change_pct"] = change_pct(float(proposal), current_price)
+    result = await session.execute(
+        update(Recommendation)
+        .where(
+            Recommendation.id == recommendation.id,
+            Recommendation.status == "pending",
+        )
+        .values(
+            status=decision,
+            decided_via=decided_via,
+            decided_at=datetime.now(UTC),
+            evidence=evidence,
+        )
+    )
     await session.commit()
     await session.refresh(recommendation)
+    if not result.rowcount:
+        raise RecommendationConflict(
+            f"This recommendation is already {recommendation.status}"
+        )
     return recommendation
 
 

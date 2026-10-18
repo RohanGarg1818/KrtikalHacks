@@ -1,52 +1,170 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { api, useApi } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError, errorMessage, useApi } from "@/lib/api";
 import { platformLabel } from "@/lib/format";
-import type { Pincode, Plans, Product } from "@/lib/types";
+import { toast } from "@/lib/toast";
+import type { Me, Pincode, Plans, Product } from "@/lib/types";
+import { useDialogA11y } from "./ui";
 
 interface Suggestion { name: string; platform: string; url: string | null; search_query: string | null; confirmed: boolean }
 
-/** Add product → confirm competitors → pick pincodes → first check. */
+const STEP_TITLES = ["Add a product", "Confirm competitors", "Where do you sell?"];
+
+/** Path segments that are routing noise or IDs, never the product's name. */
+const NOISE = /^(dp|gp|prn|prid|pid|p|pd|ip|itm|item|items|product|products|buy|s|search|en|in|www|html?)$/i;
+
+/** Platform a product link belongs to, if we know it. */
+function platformOf(url: URL): string | null {
+  const h = url.hostname.replace(/^www\./, "");
+  if (h.endsWith("blinkit.com")) return "blinkit";
+  if (h.endsWith("zepto.com") || h.endsWith("zeptonow.com")) return "zepto";
+  if (h.endsWith("swiggy.com")) return "instamart";
+  if (/(^|\.)amazon\.[a-z.]+$/.test(h) || h === "amzn.in" || h === "amzn.to") return "amazon";
+  if (h.endsWith("flipkart.com")) return "flipkart";
+  return null;
+}
+
+function safeDecode(v: string) {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
+/**
+ * Turns a pasted link into a readable product name: the path segment with the most words
+ * (e.g. `/prn/amul-taaza-toned-milk/prid/123` → "Amul Taaza Toned Milk"). Falls back to `?q=`, then null.
+ */
+function nameFromUrl(url: URL): string | null {
+  const words = (seg: string) =>
+    safeDecode(seg)
+      .replace(/\.[a-z]{2,5}$/i, "")
+      .replace(/[-_+]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const candidates = url.pathname
+    .split("/")
+    .filter((seg) => seg && !NOISE.test(seg))
+    .map(words)
+    .filter((w) => /[a-z]{3,}/i.test(w) && !/^[A-Z0-9]{8,}$/.test(w.replace(/\s/g, "")));
+  let best = candidates.sort((a, b) => b.split(" ").length - a.split(" ").length)[0];
+  if (!best) best = words(url.searchParams.get("q") ?? url.searchParams.get("query") ?? "");
+  if (!best) return null;
+  return best
+    .split(" ")
+    .map((w) => (w.length > 2 && w === w.toLowerCase() ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ")
+    .slice(0, 120);
+}
+
+function parseInput(raw: string): { name: string; link: { url: string; platform: string | null } | null } {
+  const text = raw.trim();
+  if (!/^https?:\/\//i.test(text)) return { name: text, link: null };
+  try {
+    const url = new URL(text);
+    return { name: nameFromUrl(url) ?? "New product", link: { url: url.toString(), platform: platformOf(url) } };
+  } catch {
+    // Looked like a link but isn't one; treat it as a name.
+    return { name: text.replace(/^https?:\/\//i, "").slice(0, 120) || "New product", link: null };
+  }
+}
+
+const keyOf = (s: Suggestion) => `${s.platform}:${s.name.trim().toLowerCase()}`;
+
+const toggle = <T,>(set: Set<T>, v: T) => {
+  const next = new Set(set);
+  if (next.has(v)) next.delete(v);
+  else next.add(v);
+  return next;
+};
+
+/**
+ * Add product → confirm competitors → pick pincodes → first check.
+ * Each step is resumable: a retry reuses the product already created and skips competitors already saved.
+ * Closing midway offers to keep the draft product or discard it (DELETE).
+ */
 export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const plans = useApi<Plans>("/plans");
+  const me = useApi<Me>("/me");
   const pincodes = useApi<Pincode[]>("/pincodes");
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
   const [input, setInput] = useState("");
   const [brand, setBrand] = useState("");
   const [product, setProduct] = useState<Product | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
+  // Competitors already POSTed, keyed by platform + name, so retries never duplicate them.
+  const [saved, setSaved] = useState<Set<string>>(new Set());
   const [platforms, setPlatforms] = useState<Set<string>>(new Set(["blinkit"]));
   const [codes, setCodes] = useState<Set<string>>(new Set());
+  const [pinFilter, setPinFilter] = useState("");
+  const [pinsSaved, setPinsSaved] = useState(false);
 
-  const limit = plans.data?.plans.find((p) => p.plan === plans.data?.current)?.pincodes ?? null;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
-  async function run<T>(fn: () => Promise<T>) {
+  const planName = me.data?.plan ?? plans.data?.current;
+  const limit = plans.data?.plans.find((p) => p.plan === planName)?.pincodes ?? null;
+  const preview = parseInput(input);
+
+  function requestClose() {
+    if (busy) return; // never abandon a request halfway
+    if (product && !leaving) setLeaving(true);
+    else if (!product) onClose();
+  }
+  useDialogA11y(dialogRef, true, () => (leaving ? setLeaving(false) : requestClose()), inputRef);
+
+  // Move focus to the new step's heading so screen readers announce it.
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    headingRef.current?.focus();
+  }, [step, leaving]);
+
+  async function run(fn: () => Promise<void>) {
     setBusy(true);
     setError(null);
     try {
-      return await fn();
+      await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
+      setError(errorMessage(e, "Something went wrong"));
     } finally {
       setBusy(false);
     }
   }
 
   async function createProduct() {
-    const isLink = /^https?:\/\//.test(input.trim());
-    const name = isLink ? decodeURIComponent(input.split("/").filter(Boolean).pop() ?? "New product").replace(/[-_]/g, " ") : input.trim();
+    const { name, link } = parseInput(input);
     await run(async () => {
-      const p = await api<Product>("/products", {
-        method: "POST",
-        json: { name, brand: brand || null, search_query: name },
-      });
-      setProduct(p);
+      let p = product;
+      const fields = { name, brand: brand.trim() || null, search_query: name };
+      if (!p) {
+        // check_frequency is omitted on purpose: the backend defaults it to the plan minimum.
+        p = await api<Product>("/products", { method: "POST", json: fields });
+        setProduct(p);
+      } else if (p.name !== fields.name || (p.brand ?? null) !== fields.brand) {
+        p = await api<Product>(`/products/${p.id}`, { method: "PATCH", json: fields });
+        setProduct(p);
+      }
+      if (link?.platform) {
+        setPlatforms((s) => new Set([...s, link.platform!]));
+        try {
+          await api(`/products/${p.id}/listings`, { method: "PUT", json: { listings: [{ platform: link.platform, url: link.url }] } });
+        } catch {
+          toast.info("Couldn't save the product link — you can add it later in settings");
+        }
+      }
       const found = await api<{ suggestions: Suggestion[] }>(`/products/${p.id}/competitors/discover`, { method: "POST", json: {} });
       setSuggestions(found.suggestions);
       setPicked(new Set(found.suggestions.map((_, i) => i).slice(0, 3)));
@@ -58,7 +176,14 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
     if (!product) return;
     await run(async () => {
       for (const i of picked) {
-        await api(`/products/${product.id}/competitors`, { method: "POST", json: { ...suggestions[i], confirmed: true } });
+        if (saved.has(keyOf(suggestions[i]))) continue;
+        try {
+          await api(`/products/${product.id}/competitors`, { method: "POST", json: { ...suggestions[i], confirmed: true } });
+        } catch (e) {
+          // 409 = already tracked (e.g. saved before a network blip): count it as saved.
+          if (!(e instanceof ApiError && e.status === 409)) throw e;
+        }
+        setSaved((s) => new Set(s).add(keyOf(suggestions[i])));
       }
       setStep(3);
     });
@@ -67,40 +192,61 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   async function finish() {
     if (!product) return;
     await run(async () => {
-      await api(`/products/${product.id}/pincodes`, {
-        method: "PUT",
-        json: { platforms: [...platforms], pincodes: [...codes] },
-      });
-      await api(`/products/${product.id}/runs`, { method: "POST", json: {} });
-      router.push(`/heatmap?product=${product.id}`);
+      if (!pinsSaved) {
+        await api(`/products/${product.id}/pincodes`, { method: "PUT", json: { platforms: [...platforms], pincodes: [...codes] } });
+        setPinsSaved(true);
+      }
+      try {
+        await api(`/products/${product.id}/runs`, { method: "POST", json: {} });
+        toast("First check started");
+        router.push(`/heatmap?product=${product.id}`);
+      } catch (e) {
+        // The product is fully set up; only the first run couldn't start (e.g. daily credit budget).
+        toast.error(`${product.name} is saved, but the first check didn't start: ${errorMessage(e)}`);
+        router.push(`/products/${product.id}`);
+      }
+      onClose();
     });
   }
 
-  const toggle = <T,>(set: Set<T>, v: T) => {
-    const next = new Set(set);
-    if (next.has(v)) next.delete(v);
-    else next.add(v);
-    return next;
-  };
+  async function discard() {
+    if (!product) return onClose();
+    await run(async () => {
+      await api(`/products/${product.id}`, { method: "DELETE" });
+      toast("Draft product discarded");
+      onClose();
+    });
+  }
 
-  const STEP_TITLES = ["Add a product", "Confirm competitors", "Where do you sell?"];
+  const shownPins = (pincodes.data ?? []).filter((pc) => {
+    const t = pinFilter.trim().toLowerCase();
+    return !t || pc.code.includes(t) || pc.area_name.toLowerCase().includes(t) || pc.city.toLowerCase().includes(t);
+  });
+  const overLimit = limit != null && codes.size > limit;
 
   return (
-    <div className="fixed inset-0 z-[2000] bg-ink/60 grid place-items-center p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[2000] bg-ink/60 grid place-items-center p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) requestClose();
+      }}
+    >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-product-title"
+        aria-busy={busy}
         className="card w-full max-w-[560px] p-[26px] max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2" aria-label={`Step ${step} of 3`}>
+          <div className="flex items-center gap-2">
             {[1, 2, 3].map((n) => (
               <span
                 key={n}
+                aria-hidden
                 className={`grid place-items-center size-7 rounded-full border-2 border-ink font-display text-[13px] leading-none ${
-                  n < step ? "bg-sage" : n === step ? "bg-sand shadow-[2px_2px_0_var(--ink)]" : "bg-linen text-ink/60"
+                  n < step ? "bg-sage" : n === step ? "bg-sand shadow-[2px_2px_0_var(--ink)]" : "bg-linen text-ink/75"
                 }`}
               >
                 {n < step ? "✓" : n}
@@ -109,99 +255,203 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
             <span className="eyebrow text-slate ml-2">Step {step} of 3</span>
           </div>
           <button
-            className="grid place-items-center size-9 rounded-[10px] border-2 border-ink bg-linen text-[20px] leading-none font-bold hover:bg-sand transition-colors"
-            onClick={onClose}
+            type="button"
+            className="grid place-items-center size-9 rounded-[10px] border-2 border-ink bg-linen text-[20px] leading-none font-bold hover:bg-sand transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={requestClose}
+            disabled={busy}
             aria-label="Close"
           >
             ×
           </button>
         </div>
 
-        <h2 id="add-product-title" className="text-[32px] leading-10 tracking-[-0.64px] mt-5">{STEP_TITLES[step - 1]}</h2>
-
-        {step === 1 && (
+        {leaving ? (
           <>
-            <p className="text-[16px] leading-6 text-ink/80 mt-1">Paste a product link or type its name.</p>
-            <div className="flex flex-col gap-5 mt-6">
-              <label className="flex flex-col gap-2">
-                <span className="text-[14px] leading-5 font-semibold">Product link or name</span>
-                <input className="input h-12 px-[18px] text-[16px] font-normal" placeholder="Amul Taaza Toned Milk 500 ml" value={input} onChange={(e) => setInput(e.target.value)} autoFocus />
-              </label>
-              <label className="flex flex-col gap-2">
-                <span className="text-[14px] leading-5 font-semibold">Brand <span className="font-medium text-ink/60">(optional)</span></span>
-                <input className="input h-12 px-[18px] text-[16px] font-normal" placeholder="Amul" value={brand} onChange={(e) => setBrand(e.target.value)} />
-              </label>
+            <h2 id="add-product-title" ref={headingRef} tabIndex={-1} className="text-[32px] leading-10 tracking-[-0.64px] mt-5 outline-none">
+              Leave setup?
+            </h2>
+            <p className="text-[16px] leading-6 text-ink/80 mt-1">
+              <b className="font-semibold text-ink">{product?.name}</b> is already saved. Keep it to finish later in its settings, or discard it.
+            </p>
+            <div className="flex flex-col sm:flex-row flex-wrap gap-3 mt-6">
+              <button type="button" className="btn btn-primary h-12" disabled={busy} onClick={() => setLeaving(false)}>
+                Keep setting up
+              </button>
+              <button type="button" className="btn btn-ghost h-12" disabled={busy} onClick={onClose}>
+                Keep product & close
+              </button>
+              <button type="button" className="btn btn-ink h-12" disabled={busy} onClick={discard}>
+                {busy ? "Discarding…" : "Discard product"}
+              </button>
             </div>
-            <button className="btn btn-primary h-12 mt-6 w-full" disabled={!input.trim() || busy} onClick={createProduct}>
-              {busy ? "Finding competitors…" : "Find competitors →"}
-            </button>
           </>
-        )}
-
-        {step === 2 && (
+        ) : (
           <>
-            <p className="text-[16px] leading-6 text-ink/80 mt-1">We found similar products. Pick the ones to track.</p>
-            <ul className="flex flex-col gap-3 mt-6 stagger">
-              {suggestions.length === 0 && <li className="text-[15px] text-ink/70">No suggestions found — you can add rivals later in settings.</li>}
-              {suggestions.map((s, i) => (
-                <li key={i}>
-                  <label
-                    className={`flex items-center gap-3 border-2 border-ink rounded-[12px] px-4 py-3 cursor-pointer transition-colors ${
-                      picked.has(i) ? "bg-sage/50 shadow-[3px_3px_0_var(--ink)]" : "bg-linen hover:bg-ink/5"
-                    }`}
-                  >
-                    <input type="checkbox" checked={picked.has(i)} onChange={() => setPicked(toggle(picked, i))} className="accent-[var(--slate)] size-4 shrink-0" />
-                    <span className="font-semibold text-[15px] flex-1 min-w-0">{s.name}</span>
-                    <span className="chip bg-linen shrink-0">{platformLabel(s.platform)}</span>
+            <h2 id="add-product-title" ref={headingRef} tabIndex={-1} className="text-[32px] leading-10 tracking-[-0.64px] mt-5 outline-none">
+              {STEP_TITLES[step - 1]}
+            </h2>
+
+            {step === 1 && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (input.trim() && !busy) void createProduct();
+                }}
+              >
+                <p className="text-[16px] leading-6 text-ink/80 mt-1">Paste a product link or type its name.</p>
+                <div className="flex flex-col gap-5 mt-6">
+                  <label className="flex flex-col gap-2">
+                    <span className="text-[14px] leading-5 font-semibold">Product link or name</span>
+                    <input
+                      ref={inputRef}
+                      className="input h-12 px-[18px] text-[16px] font-normal"
+                      placeholder="Amul Taaza Toned Milk 500 ml"
+                      value={input}
+                      maxLength={2000}
+                      onChange={(e) => setInput(e.target.value)}
+                      aria-describedby={preview.link ? "add-product-preview" : undefined}
+                    />
                   </label>
-                </li>
-              ))}
-            </ul>
-            <button className="btn btn-primary h-12 mt-6 w-full" disabled={busy} onClick={saveCompetitors}>
-              {busy ? "Saving…" : `Track ${picked.size} competitor${picked.size === 1 ? "" : "s"} →`}
-            </button>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <p className="text-[14px] leading-5 font-semibold mt-6 mb-2">Platforms</p>
-            <div className="flex flex-wrap gap-2">
-              {(plans.data?.platforms ?? ["blinkit", "zepto", "instamart"]).map((p) => (
-                <button key={p} type="button" className="pill" data-active={platforms.has(p)} aria-pressed={platforms.has(p)} onClick={() => setPlatforms(toggle(platforms, p))}>
-                  {platforms.has(p) ? "✓ " : ""}
-                  {platformLabel(p)}
+                  {preview.link && (
+                    <p id="add-product-preview" className="text-[14px] leading-5 -mt-3 text-ink/80">
+                      We&apos;ll call it <b className="font-semibold text-ink">{preview.name}</b>
+                      {preview.link.platform ? ` and save it as your ${platformLabel(preview.link.platform)} link` : ""}. You can rename it later.
+                    </p>
+                  )}
+                  <label className="flex flex-col gap-2">
+                    <span className="text-[14px] leading-5 font-semibold">
+                      Brand <span className="font-medium text-ink/75">(optional)</span>
+                    </span>
+                    <input className="input h-12 px-[18px] text-[16px] font-normal" placeholder="Amul" value={brand} maxLength={120} onChange={(e) => setBrand(e.target.value)} />
+                  </label>
+                </div>
+                <button type="submit" className="btn btn-primary h-12 mt-6 w-full" disabled={!input.trim() || busy}>
+                  {busy ? "Finding competitors…" : product ? "Try again →" : "Find competitors →"}
                 </button>
-              ))}
-            </div>
-            <div className="flex items-center justify-between mt-6 mb-2">
-              <p className="text-[14px] leading-5 font-semibold">Pincodes</p>
-              <span className={`text-[14px] font-medium ${limit != null && codes.size > limit ? "text-ink font-semibold bg-sand px-2 rounded-md" : "text-ink/80"}`}>
-                {codes.size} selected{limit ? ` · plan allows ${limit}` : ""}
-              </span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1 -m-1">
-              {pincodes.data?.map((pc) => (
-                <label
-                  key={pc.code}
-                  className={`flex items-center gap-2 border-2 border-ink rounded-[12px] px-3 py-2 text-[14px] cursor-pointer transition-colors ${codes.has(pc.code) ? "bg-sage/50" : "bg-linen hover:bg-ink/5"}`}
-                >
-                  <input type="checkbox" checked={codes.has(pc.code)} onChange={() => setCodes(toggle(codes, pc.code))} className="accent-[var(--slate)] size-4 shrink-0" />
-                  <b className="font-semibold">{pc.code}</b> <span className="truncate text-ink/80">{pc.area_name}</span>
+              </form>
+            )}
+
+            {step === 2 && (
+              <>
+                <p className="text-[16px] leading-6 text-ink/80 mt-1">We found similar products. Pick the ones to track.</p>
+                <ul className="flex flex-col gap-3 mt-6 stagger">
+                  {suggestions.length === 0 && <li className="text-[15px] text-ink/75">No suggestions found — you can add rivals later in settings.</li>}
+                  {suggestions.map((s, i) => {
+                    const isSaved = saved.has(keyOf(s));
+                    const on = isSaved || picked.has(i);
+                    return (
+                    <li key={i}>
+                      <label
+                        className={`flex items-center gap-3 border-2 border-ink rounded-[12px] px-4 py-3 transition-colors ${isSaved ? "cursor-default" : "cursor-pointer"} ${
+                          on ? "bg-sage/50 shadow-[3px_3px_0_var(--ink)]" : "bg-linen hover:bg-ink/5"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          disabled={isSaved || busy}
+                          onChange={() => setPicked(toggle(picked, i))}
+                          className="accent-[var(--slate)] size-4 shrink-0"
+                        />
+                        <span className="font-semibold text-[15px] flex-1 min-w-0 break-words">{s.name}</span>
+                        {isSaved && <span className="chip bg-sage shrink-0">✓ Saved</span>}
+                        <span className="chip bg-linen shrink-0">{platformLabel(s.platform)}</span>
+                      </label>
+                    </li>
+                    );
+                  })}
+                </ul>
+                <div className="flex gap-3 mt-6">
+                  <button type="button" className="btn btn-ghost h-12" disabled={busy} onClick={() => setStep(1)}>
+                    Back
+                  </button>
+                  <button type="button" className="btn btn-primary h-12 flex-1" disabled={busy} onClick={saveCompetitors}>
+                    {busy ? "Saving…" : picked.size ? `Track ${picked.size} competitor${picked.size === 1 ? "" : "s"} →` : "Skip for now →"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {step === 3 && (
+              <>
+                <p className="text-[14px] leading-5 font-semibold mt-6 mb-2" id="add-product-platforms">
+                  Platforms
+                </p>
+                <div className="flex flex-wrap gap-2" role="group" aria-labelledby="add-product-platforms">
+                  {(plans.data?.platforms ?? ["blinkit", "zepto", "instamart"]).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className="pill"
+                      data-active={platforms.has(p)}
+                      aria-pressed={platforms.has(p)}
+                      disabled={busy}
+                      onClick={() => {
+                        setPlatforms(toggle(platforms, p));
+                        setPinsSaved(false);
+                      }}
+                    >
+                      {platforms.has(p) ? "✓ " : ""}
+                      {platformLabel(p)}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mt-6 mb-2">
+                  <p className="text-[14px] leading-5 font-semibold">Pincodes</p>
+                  <span className={`text-[14px] font-medium ${overLimit ? "text-ink font-semibold bg-sand px-2 rounded-md" : "text-ink/80"}`} aria-live="polite">
+                    {codes.size} selected{limit != null ? ` · plan allows ${limit}` : ""}
+                  </span>
+                </div>
+                <label className="block mb-3">
+                  <span className="sr-only">Filter pincodes</span>
+                  <input
+                    className="input h-10 px-4 text-[15px] font-normal"
+                    placeholder="Filter by pincode, area or city"
+                    value={pinFilter}
+                    onChange={(e) => setPinFilter(e.target.value)}
+                  />
                 </label>
-              ))}
-            </div>
-            <button
-              className="btn btn-primary h-12 mt-6 w-full"
-              disabled={busy || !codes.size || !platforms.size || (limit != null && codes.size > limit)}
-              onClick={finish}
-            >
-              {busy ? "Starting first check…" : "Start first check →"}
-            </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1 -m-1">
+                  {!pincodes.data && <p className="text-[14px] text-ink/75 col-span-full">Loading pincodes…</p>}
+                  {pincodes.data && shownPins.length === 0 && <p className="text-[14px] text-ink/75 col-span-full">No pincodes match “{pinFilter}”.</p>}
+                  {shownPins.map((pc) => (
+                    <label
+                      key={pc.code}
+                      className={`flex items-center gap-2 border-2 border-ink rounded-[12px] px-3 py-2 text-[14px] cursor-pointer transition-colors ${codes.has(pc.code) ? "bg-sage/50" : "bg-linen hover:bg-ink/5"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={codes.has(pc.code)}
+                        disabled={busy}
+                        onChange={() => {
+                          setCodes(toggle(codes, pc.code));
+                          setPinsSaved(false);
+                        }}
+                        className="accent-[var(--slate)] size-4 shrink-0"
+                      />
+                      <b className="font-semibold">{pc.code}</b> <span className="truncate text-ink/80">{pc.area_name}</span>
+                    </label>
+                  ))}
+                </div>
+                {overLimit && <p className="text-[14px] mt-3">Your plan allows {limit} pincodes per product. Unselect a few, or upgrade in Settings.</p>}
+                <div className="flex gap-3 mt-6">
+                  <button type="button" className="btn btn-ghost h-12" disabled={busy} onClick={() => setStep(2)}>
+                    Back
+                  </button>
+                  <button type="button" className="btn btn-primary h-12 flex-1" disabled={busy || !codes.size || !platforms.size || overLimit} onClick={finish}>
+                    {busy ? "Starting first check…" : "Start first check →"}
+                  </button>
+                </div>
+              </>
+            )}
           </>
         )}
 
-        {error && <p className="text-[14px] font-semibold mt-4 bg-sand border-2 border-ink rounded-[12px] px-4 py-3" role="alert">{error}</p>}
+        {error && (
+          <p className="text-[14px] font-semibold mt-4 bg-sand border-2 border-ink rounded-[12px] px-4 py-3" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );

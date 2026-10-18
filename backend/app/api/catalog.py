@@ -1,5 +1,7 @@
 """Read-only catalog endpoints plus per-product selection and listing links."""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -11,7 +13,8 @@ from ..deps import get_current_user
 from ..models.product import Pincode, ProductListing, ProductPincode
 from ..models.telegram import TelegramLinkCode
 from ..models.user import User
-from ..schemas.products import AlertRuleInput, PincodeSelection
+from ..schemas.common import PLATFORMS, Platform, WebUrl, required_text
+from ..schemas.products import AlertRuleOut, PincodeSelection
 from ..services.ai import get_ai_provider, with_fallback
 from ..services.plans import PLAN_LIMITS
 from ..services.telegram import redeem_link_code
@@ -19,7 +22,8 @@ from .products import get_owned_product, get_user_plan
 
 router = APIRouter(tags=["catalog"])
 
-PLATFORMS = ["blinkit", "zepto", "instamart", "amazon", "flipkart"]
+LinkCodeText = required_text(64)
+RuleSentence = required_text(500)
 
 
 class PincodeOut(BaseModel):
@@ -34,6 +38,7 @@ class PlanLimitsOut(BaseModel):
     plan: str
     products: int | None
     pincodes: int | None
+    competitors: int
     minimum_frequency_hours: int | None
     daily_credit_budget: int | None
 
@@ -45,21 +50,26 @@ class PlansResponse(BaseModel):
 
 
 class ListingItem(BaseModel):
+    platform: Platform
+    url: WebUrl = None
+
+
+class ListingOut(BaseModel):
     platform: str
-    url: str | None = Field(default=None, max_length=1000)
+    url: str | None = None
 
 
 class ListingsUpdate(BaseModel):
-    listings: list[ListingItem]
+    listings: list[ListingItem] = Field(max_length=len(PLATFORMS))
 
 
 class SimulateLinkRequest(BaseModel):
-    code: str = Field(min_length=1, max_length=32)
-    chat_type: str = "personal"
+    code: LinkCodeText
+    chat_type: Literal["personal", "group"] = "personal"
 
 
 class AlertRuleParseRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
+    text: RuleSentence
 
 
 @router.get("/pincodes", response_model=list[PincodeOut])
@@ -88,12 +98,13 @@ async def list_plans(
                 plan=name,
                 products=limits.products,
                 pincodes=limits.pincodes,
+                competitors=limits.competitors,
                 minimum_frequency_hours=limits.minimum_frequency_hours,
                 daily_credit_budget=limits.daily_credit_budget,
             )
             for name, limits in PLAN_LIMITS.items()
         ],
-        platforms=PLATFORMS,
+        platforms=list(PLATFORMS),
     )
 
 
@@ -117,52 +128,53 @@ async def get_pincode_selection(
     return PincodeSelection.model_construct(platforms=platforms, pincodes=pincodes)
 
 
-@router.get("/products/{product_id}/listings", response_model=list[ListingItem])
+@router.get("/products/{product_id}/listings", response_model=list[ListingOut])
 async def get_listings(
     product_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[ListingItem]:
+) -> list[ListingOut]:
     await get_owned_product(session, user.id, product_id)
     rows = await session.scalars(
         select(ProductListing)
         .where(ProductListing.product_id == product_id)
         .order_by(ProductListing.platform)
     )
-    return [ListingItem(platform=row.platform, url=row.url) for row in rows]
+    return [ListingOut(platform=row.platform, url=row.url) for row in rows]
 
 
-@router.put("/products/{product_id}/listings", response_model=list[ListingItem])
+@router.put("/products/{product_id}/listings", response_model=list[ListingOut])
 async def replace_listings(
     product_id: str,
     payload: ListingsUpdate,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[ListingItem]:
+) -> list[ListingOut]:
     await get_owned_product(session, user.id, product_id)
     await session.execute(
         delete(ProductListing).where(ProductListing.product_id == product_id)
     )
-    items = [item for item in payload.listings if item.platform in PLATFORMS]
+    # One listing per platform; a repeated platform keeps its last entry.
+    items = list({item.platform: item for item in payload.listings}.values())
     session.add_all(
         ProductListing(product_id=product_id, platform=item.platform, url=item.url)
         for item in items
     )
     await session.commit()
-    return items
+    return [ListingOut(platform=item.platform, url=item.url) for item in items]
 
 
-@router.post("/products/{product_id}/alert-rules/parse", response_model=AlertRuleInput)
+@router.post("/products/{product_id}/alert-rules/parse", response_model=AlertRuleOut)
 async def parse_alert_rule(
     product_id: str,
     payload: AlertRuleParseRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> AlertRuleInput:
+) -> AlertRuleOut:
     """Turn a plain-English rule into a structured one; the client saves it via PUT."""
     await get_owned_product(session, user.id, product_id)
     rule, _source = await with_fallback(get_ai_provider(), "parse_alert_rule", payload.text)
-    return AlertRuleInput(
+    return AlertRuleOut(
         kind=rule.kind,
         threshold=rule.threshold,
         rule_text=rule.rule_text or payload.text,

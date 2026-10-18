@@ -1,4 +1,10 @@
+from typing import ClassVar, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from .common import ClockTime, FiniteFloat, PatchModel
+
+ChannelName = Literal["telegram", "email"]
 
 
 class UserSettingsResponse(BaseModel):
@@ -10,24 +16,27 @@ class UserSettingsResponse(BaseModel):
     channels: dict
 
 
-class UserSettingsUpdate(BaseModel):
-    briefing_time: str | None = Field(
-        default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
+class UserSettingsUpdate(PatchModel):
+    nullable_fields: ClassVar[frozenset[str]] = frozenset(
+        {"quiet_hours_start", "quiet_hours_end"}
     )
-    quiet_hours_start: str | None = Field(
-        default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
+
+    briefing_time: ClockTime | None = None
+    quiet_hours_start: ClockTime | None = None
+    quiet_hours_end: ClockTime | None = None
+    default_thresholds: dict[str, FiniteFloat | None] | None = Field(
+        default=None, max_length=20
     )
-    quiet_hours_end: str | None = Field(
-        default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
-    )
-    default_thresholds: dict | None = None
-    channels: dict | None = None
+    channels: dict[ChannelName, bool] | None = None
 
 
 class PlanChangeRequest(BaseModel):
-    plan: str
+    plan: Literal["free", "pro", "brand"]
 
 
 class PlanChangeResponse(BaseModel):
     plan: str
     status: str
+    test_mode: bool = True
+    adjusted_products: int = 0
+    paused_products: int = 0

@@ -24,22 +24,22 @@ from ..schemas.notifications import (
     TelegramStatusResponse,
     TelegramTestResponse,
 )
-from ..schemas.products import AlertRuleInput
+from ..schemas.products import AlertRuleOut
 from ..services.alerts import effective_rules
 from ..services.telegram import (
     bot_is_running,
     build_deeplink,
     create_link_code,
     send_telegram_message,
-    unlink_chat,
+    unlink_link,
 )
 from .products import get_owned_product
 
 router = APIRouter(tags=["notifications"])
 
 
-def _rule_payload(rule) -> AlertRuleInput:
-    return AlertRuleInput(
+def _rule_payload(rule) -> AlertRuleOut:
+    return AlertRuleOut(
         kind=rule.kind if hasattr(rule, "kind") else rule["kind"],
         threshold=rule.threshold if hasattr(rule, "threshold") else rule.get("threshold"),
         rule_text=rule.rule_text if hasattr(rule, "rule_text") else rule.get("rule_text"),
@@ -137,13 +137,13 @@ async def mark_all_alerts_read(
 
 @router.get(
     "/products/{product_id}/alert-rules",
-    response_model=list[AlertRuleInput],
+    response_model=list[AlertRuleOut],
 )
 async def get_alert_rules(
     product_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[AlertRuleInput]:
+) -> list[AlertRuleOut]:
     product = await get_owned_product(session, user.id, product_id)
     rules = await effective_rules(session, product)
     return [_rule_payload(rule) for rule in rules]
@@ -166,7 +166,8 @@ async def post_link_code(
     )
     return LinkCodeResponse(
         code=code.code,
-        deep_link=build_deeplink(code.code, chat_type=chat_type),
+        deep_link=build_deeplink(code.code, chat_type),
+        command=f"/start {code.code}",
         expires_at=code.expires_at,
         product_id=product_id,
     )
@@ -258,11 +259,10 @@ async def update_telegram_link(
         raise HTTPException(
             status_code=404, detail="Telegram is not connected for this product"
         )
+    changes = payload.model_dump(exclude_unset=True)
     for row in rows:
-        if payload.alert_types is not None:
-            row.alert_types = payload.alert_types
-        if payload.briefing_time is not None:
-            row.briefing_time = payload.briefing_time
+        for field, value in changes.items():
+            setattr(row, field, value)
     await session.commit()
     return await telegram_status(product_id, user=user, session=session, settings=settings)
 
@@ -305,6 +305,27 @@ async def send_test_telegram(
     )
 
 
+@router.delete("/products/{product_id}/telegram/links/{link_id}", status_code=204)
+async def disconnect_telegram_link(
+    product_id: str,
+    link_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Remove a single chat from this product; other chats stay connected."""
+    await get_owned_product(session, user.id, product_id)
+    owned = await session.scalar(
+        select(TelegramLink.id).where(
+            TelegramLink.id == link_id,
+            TelegramLink.product_id == product_id,
+            TelegramLink.user_id == user.id,
+        )
+    )
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Telegram chat link not found")
+    await unlink_link(session, link_id)
+
+
 @router.delete("/products/{product_id}/telegram", status_code=204)
 async def disconnect_telegram(
     product_id: str,
@@ -322,5 +343,6 @@ async def disconnect_telegram(
             )
         ).all()
     )
+    # By link id: the same chat may stay linked to the user's other products.
     for row in rows:
-        await unlink_chat(session, chat_id=row.chat_id)
+        await unlink_link(session, row.id)

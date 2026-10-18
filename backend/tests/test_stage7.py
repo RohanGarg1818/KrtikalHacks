@@ -143,7 +143,8 @@ async def test_errors_have_standard_envelope_and_request_ids() -> None:
         response = await client.get("/api/products/not-a-product")
     assert response.status_code == 404
     assert response.headers["X-Request-ID"]
-    assert response.json()["error"]["code"] == "http_404"
+    assert response.json()["error"]["code"] == "not_found"
+    assert "detail" not in response.json()
     assert response.json()["error"]["message"] == "Product not found"
 
 
@@ -158,7 +159,8 @@ async def test_validation_errors_use_envelope() -> None:
     assert response.status_code == 422
     body = response.json()
     assert body["error"]["code"] == "validation_error"
-    assert body["detail"]
+    assert "detail" not in body
+    assert {field["loc"] for field in body["error"]["fields"]} >= {"body.name"}
 
 
 def test_grounding_violations_detect_hallucinated_pin_and_price() -> None:

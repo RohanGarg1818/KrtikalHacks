@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.deps import get_current_user
+from app.deps import get_current_user, get_stream_user
 from app.main import create_app
 from app.models.checks import CheckResult, CheckRun, CreditLedger
 from app.models.product import Competitor, Product, ProductPincode
@@ -40,6 +40,7 @@ def app_for(user: User):
         return user
 
     app.dependency_overrides[get_current_user] = current_user_override
+    app.dependency_overrides[get_stream_user] = current_user_override
     return app
 
 
@@ -169,7 +170,7 @@ async def test_paused_product_cannot_run() -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(f"/api/products/{product_id}/runs")
     assert response.status_code == 422
-    assert "Paused" in response.json()["detail"]
+    assert "Paused" in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -196,7 +197,7 @@ async def test_run_rejects_unselected_pincode() -> None:
             f"/api/products/{product_id}/runs", json={"pincodes": ["110001"]}
         )
     assert response.status_code == 422
-    assert "not selected" in response.json()["detail"]
+    assert "not selected" in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio

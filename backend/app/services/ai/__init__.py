@@ -11,7 +11,13 @@ from __future__ import annotations
 import logging
 
 from ...config import get_settings
-from .base import AIProvider, AIProviderError, grounding_violations, result_text
+from .base import (
+    AIProvider,
+    AIProviderError,
+    grounding_violations,
+    proposed_prices,
+    result_text,
+)
 from .fallback import FallbackAIProvider
 from .gemini_client import GeminiAIProvider
 
@@ -59,7 +65,9 @@ async def with_fallback(primary: AIProvider, task: str, *args, **kwargs):
         return await getattr(fallback, task)(*args, **kwargs), fallback.name
     if task in GROUNDED_TASKS:
         context = args[0] if args else kwargs.get("context", {})
-        violations = grounding_violations(result_text(task, result), context)
+        violations = grounding_violations(
+            result_text(task, result), context, proposed_prices(task, result)
+        )
         if violations:
             logger.warning(
                 "Gemini %s failed grounding check (%s); using fallback",

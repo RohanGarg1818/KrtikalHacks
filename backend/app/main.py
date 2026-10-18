@@ -2,15 +2,21 @@
 
 import logging
 import time
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .api.catalog import router as catalog_router
 from .api.chat import router as chat_router
@@ -66,9 +72,137 @@ async def lifespan(app: FastAPI):
         await dispose_db()
 
 
+ERROR_CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    422: "unprocessable",
+    429: "rate_limited",
+    503: "service_unavailable",
+}
+
+
+def error_body(code: str, message: str, fields: list[dict] | None = None) -> dict:
+    """The single error envelope every failing response uses."""
+    error: dict = {"code": code, "message": message}
+    if fields:
+        error["fields"] = fields
+    return {"error": error}
+
+
+def validation_fields(errors: Sequence[Any]) -> list[dict[str, str]]:
+    fields = []
+    for item in errors:
+        message = str(item.get("msg", "Invalid value"))
+        # Custom validators raise ValueError; pydantic prefixes those messages.
+        message = message.removeprefix("Value error, ")
+        location = ".".join(str(part) for part in item.get("loc", ()))
+        fields.append({"loc": location, "msg": message})
+    return fields
+
+
+def validation_response(errors: Sequence[Any]) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content=error_body(
+            "validation_error", "Request validation failed", validation_fields(errors)
+        ),
+    )
+
+
+class UnhandledErrorMiddleware:
+    """Turn uncaught exceptions into the JSON error envelope.
+
+    Installed inside CORSMiddleware so 500 responses still carry CORS headers;
+    Starlette's own fallback handler sits outside every user middleware.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception:
+            logger.exception(
+                "request_id=%s unhandled error",
+                scope.get("state", {}).get("request_id", "unknown"),
+            )
+            if response_started:
+                raise
+            response = JSONResponse(
+                status_code=500,
+                content=error_body("internal_error", "Unexpected server error"),
+            )
+            await response(scope, receive, send)
+
+
+def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        code = ERROR_CODES.get(exc.status_code, f"http_{exc.status_code}")
+        message = exc.detail if isinstance(exc.detail, str) else "Request failed"
+        fields = None
+        # Endpoints may raise a structured detail: {"code", "message", "fields"?}.
+        if isinstance(exc.detail, dict):
+            code = str(exc.detail.get("code") or code)
+            message = str(exc.detail.get("message") or message)
+            fields = exc.detail.get("fields")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_body(code, message, fields),
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return validation_response(exc.errors())
+
+    @app.exception_handler(ValidationError)
+    async def model_validation_error(
+        request: Request, exc: ValidationError
+    ) -> JSONResponse:
+        # A schema built inside a handler rejected its input: still the client's fault.
+        return validation_response(exc.errors())
+
+    @app.exception_handler(IntegrityError)
+    async def integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        logger.warning(
+            "request_id=%s integrity error: %s",
+            getattr(request.state, "request_id", "unknown"),
+            exc.orig,
+        )
+        return JSONResponse(
+            status_code=409,
+            content=error_body(
+                "conflict", "This change conflicts with data that already exists"
+            ),
+        )
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
+    settings.validate_for_startup()
     app = FastAPI(title="ShelfSense API", version="0.1.0", lifespan=lifespan)
+    # Last added runs first: request context -> CORS -> unhandled-error catch.
+    app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.frontend_origin],
@@ -100,52 +234,14 @@ def create_app() -> FastAPI:
         )
         return response
 
-    @app.exception_handler(HTTPException)
-    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
-        message = exc.detail if isinstance(exc.detail, str) else "Request failed"
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "error": {"code": f"http_{exc.status_code}", "message": message},
-                # Kept during the hackathon build for clients using FastAPI's usual error field.
-                "detail": exc.detail,
-            },
-        )
+    register_error_handlers(app)
 
-    @app.exception_handler(RequestValidationError)
-    async def validation_error(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": {
-                    "code": "validation_error",
-                    "message": "Request validation failed",
-                },
-                "detail": exc.errors(),
-            },
-        )
-
-    @app.exception_handler(Exception)
-    async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception(
-            "request_id=%s unhandled error",
-            getattr(request.state, "request_id", "unknown"),
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": {
-                    "code": "internal_error",
-                    "message": "Unexpected server error",
-                }
-            },
-        )
-
-    media_dir = Path("media")
-    media_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/media", StaticFiles(directory=media_dir), name="media")
+    if not settings.is_production:
+        # Production serves screenshots only through the owner-checked
+        # `GET /api/check-results/{id}/screenshot` endpoint.
+        media_dir = Path("media")
+        media_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/media", StaticFiles(directory=media_dir), name="media")
     app.include_router(health_router, prefix="/api")
     app.include_router(me_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")

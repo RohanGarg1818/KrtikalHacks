@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 // Marketing homepage — Figma frame 8:943 ("homepage"). Static page: the numbers
 // in the widgets are the design's illustrative marketing copy.
+// Sections use a larger scroll margin below lg, where the sticky header has a second nav row.
 
 const A = "/figma/home";
 // Fraunces with the file's variation settings, for non-heading elements
@@ -28,6 +29,7 @@ const H2 = "text-[40px] leading-[48px] sm:text-[52px] sm:leading-[64px] lg:text-
 
 const NAV = [
   ["How it works", "#how"],
+  ["Agents", "#agents"],
   ["Mobile", "#mobile"],
   ["Features", "#features"],
   ["Pricing", "#pricing"],
@@ -47,13 +49,13 @@ function Navbar() {
             <span className="text-[10px] leading-[10px] font-bold tracking-[2px] uppercase">Intelligence</span>
           </span>
         </Link>
-        <nav className="hidden lg:flex items-center gap-8">
+        <nav className="hidden lg:flex items-center gap-8" aria-label="Sections">
           {NAV.map(([t, href]) => (
             <a key={t} href={href} className="tab p-0 text-[16px] leading-[24px] font-bold">{t}</a>
           ))}
         </nav>
         <div className="flex items-center gap-4">
-          <Link href="/dashboard" className={`hidden sm:block bg-linen border-2 border-ink rounded-[12px] px-[18px] py-[10px] text-[15px] leading-[22.5px] font-bold ${PRESS}`}>
+          <Link href="/login" className={`hidden sm:block bg-linen border-2 border-ink rounded-[12px] px-[18px] py-[10px] text-[15px] leading-[22.5px] font-bold ${PRESS}`}>
             Log in
           </Link>
           <Link href="/dashboard" className={`flex items-center gap-2 h-[44px] px-4 sm:px-[22px] rounded-[12px] border-2 border-ink bg-slate text-linen text-[14px] leading-[20px] font-bold shadow-[3px_3px_0_var(--ink)] ${PRESS}`}>
@@ -61,8 +63,9 @@ function Navbar() {
           </Link>
         </div>
       </div>
-      <nav className="lg:hidden flex gap-5 overflow-x-auto px-4 sm:px-6 pb-3 -mt-1 text-[14px] font-bold">
+      <nav className="lg:hidden flex gap-5 overflow-x-auto px-4 sm:px-6 pb-3 -mt-1 text-[14px] font-bold" aria-label="Sections">
         {NAV.map(([t, href]) => <a key={t} href={href} className="whitespace-nowrap">{t}</a>)}
+        <Link href="/login" className="sm:hidden whitespace-nowrap underline underline-offset-4">Log in</Link>
       </nav>
     </header>
   );
@@ -115,7 +118,7 @@ function LiveMesh() {
               {MESH.map(([pin, s]) => (
                 <div key={pin} className="flex flex-col items-center gap-1">
                   <MeshDot s={s} />
-                  <span className={`text-[9px] leading-[13.5px] ${s === "oos" ? "font-extrabold" : "font-bold"} ${s === "na" ? "text-ink/60" : ""}`}>{pin}</span>
+                  <span className={`text-[9px] leading-[13.5px] ${s === "oos" ? "font-extrabold" : "font-bold"} ${s === "na" ? "text-ink/75" : ""}`}>{pin}</span>
                 </div>
               ))}
             </div>
@@ -202,7 +205,7 @@ const REASONS = [
 
 function Problem() {
   return (
-    <section id="problem" className="bg-sand border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-20">
+    <section id="problem" className="bg-sand border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-[136px] lg:scroll-mt-20">
       <div className={`${WRAP} grid gap-14 lg:grid-cols-12 items-start`}>
         <div className="lg:col-span-6 lg:pr-6 flex flex-col items-start gap-[19.3px]">
           <span className="bg-ink border-2 border-ink rounded-[8px] px-[14px] pt-[10.5px] pb-[7.5px] text-sand text-[12px] leading-[18px] font-extrabold tracking-[2.4px] uppercase">
@@ -251,7 +254,7 @@ const STEPS = [
 
 function HowItWorks() {
   return (
-    <section id="how" className="bg-linen border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-20">
+    <section id="how" className="bg-linen border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-[136px] lg:scroll-mt-20">
       <div className={`${WRAP} flex flex-col items-center gap-12 lg:gap-20`}>
         <div className="max-w-[700px] flex flex-col items-center">
           <Eyebrow className="text-slate">Autopilot workflow</Eyebrow>
@@ -267,6 +270,178 @@ function HowItWorks() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ----------------------------------------------------- 5b TINYFISH AGENT */
+
+// Illustrative run (marketing copy, like the other widgets on this page) mirroring the
+// real agent step sequence the product's Agent console shows.
+const AGENT_STEPS = [
+  { k: "session", t: "Starting browser session", d: "tf_sess_7c1e9a42" },
+  { k: "navigate", t: "Opening blinkit.com", d: null },
+  { k: "location", t: "Setting delivery pincode 110017", d: "Malviya Nagar, South Delhi" },
+  { k: "search", t: "Searching “Amul Taaza 500 ml”", d: null },
+  { k: "open", t: "Opening best match", d: "Amul Taaza Toned Fresh Milk · 500 ml" },
+  { k: "extract", t: "Reading price, stock and delivery time", d: "₹29 · MRP ₹30 · In stock · 11 min" },
+  { k: "checkout", t: "Computing true price at checkout", d: "Item ₹29 + handling ₹4 + delivery ₹0 = ₹33" },
+  { k: "screenshot", t: "Capturing evidence screenshot", d: "Saved to the pin on your heatmap" },
+  { k: "done", t: "Check complete", d: "3.2 s · no order placed" },
+] as const;
+
+const AGENT_POINTS = [
+  ["Opens the real app", "A headless browser visits Blinkit, Zepto or Instamart like a shopper would."],
+  ["Sets your pincode", "Every dark store has its own shelf, so each check is pinned to one delivery area."],
+  ["Reads price and stock", "Listed price, MRP, availability and delivery time, straight from the page."],
+  ["Finds the true price", "Walks to checkout to add handling and delivery fees. It never places an order."],
+  ["Keeps a screenshot", "Every result comes with evidence you can open from the heatmap."],
+] as const;
+
+/**
+ * CSS-only playback (keeps the page a server component). One 14s loop: steps light up in turn
+ * (spinner → check + detail), then the result card lands; everything resets together at 94%.
+ * Without motion (prefers-reduced-motion) the static styles show the finished run.
+ */
+const LOOP = 14;
+const STEP_SPAN = 76 / AGENT_STEPS.length; // % of the loop each step takes
+const pct = (n: number) => `${n.toFixed(2)}%`;
+const AGENT_CSS = [
+  ...AGENT_STEPS.map((_, i) => {
+    const a = 3 + i * STEP_SPAN;
+    const b = a + STEP_SPAN * 0.7;
+    return `
+@keyframes tf-row-${i}{0%,${pct(a)}{opacity:.35}${pct(a + 0.6)},94%{opacity:1}100%{opacity:.35}}
+@keyframes tf-spin-${i}{0%,${pct(a)}{opacity:0}${pct(a + 0.4)},${pct(b)}{opacity:1}${pct(b + 0.4)},100%{opacity:0}}
+@keyframes tf-ok-${i}{0%,${pct(b)}{opacity:0;transform:scale(.4)}${pct(b + 0.8)},94%{opacity:1;transform:none}100%{opacity:0}}
+@keyframes tf-detail-${i}{0%,${pct(b)}{opacity:0;max-height:0}${pct(b + 1)},94%{opacity:1;max-height:24px}100%{opacity:0;max-height:0}}
+.tf-row-${i}{animation:tf-row-${i} ${LOOP}s linear infinite}
+.tf-spin-${i}{animation:tf-spin-${i} ${LOOP}s linear infinite}
+.tf-ok-${i}{animation:tf-ok-${i} ${LOOP}s cubic-bezier(.2,.9,.3,1.3) infinite}
+.tf-detail-${i}{animation:tf-detail-${i} ${LOOP}s ease-out infinite}`;
+  }),
+  `
+@keyframes tf-result{0%,80%{opacity:0;transform:translateY(12px) rotate(-1deg)}83%,94%{opacity:1;transform:none}100%{opacity:0}}
+@keyframes tf-bar{0%,3%{transform:scaleX(0)}79%,94%{transform:scaleX(1)}100%{transform:scaleX(0)}}
+.tf-result{animation:tf-result ${LOOP}s cubic-bezier(.22,1,.36,1) infinite}
+.tf-bar{transform-origin:left;animation:tf-bar ${LOOP}s linear infinite}
+@media (prefers-reduced-motion: reduce){
+  [class*="tf-"]{animation:none!important}
+  .tf-spin{opacity:0!important}
+}`,
+].join("");
+
+function AgentConsoleMock() {
+  return (
+    <div className="relative">
+      <div className="bg-linen border-2 border-ink rounded-[20px] shadow-[8px_8px_0_var(--ink)] overflow-hidden">
+        {/* console header */}
+        <div className="bg-ink flex flex-wrap items-center justify-between gap-3 px-5 sm:px-6 py-4">
+          <div className="flex items-center gap-[10px]">
+            <span className="size-3 rounded-full bg-sage border border-linen/40" />
+            <span className={`${SERIF} font-bold text-[18px] leading-[28px] text-linen whitespace-nowrap`}>TinyFish · agent run</span>
+          </div>
+          <span className="bg-sand border border-ink rounded-[6px] px-[10px] py-[3px] text-[11px] leading-[16.5px] font-extrabold tracking-[0.55px] uppercase">
+            1 of 12 checks
+          </span>
+        </div>
+        {/* address bar */}
+        <div className="flex items-center gap-2 border-b-2 border-ink px-4 sm:px-6 py-3">
+          <span className="flex-1 min-w-0 truncate bg-sand/40 border-2 border-ink rounded-[10px] px-3 py-[6px] text-[12px] leading-4 font-bold">
+            blinkit.com/prn/amul-taaza-toned-fresh-milk
+          </span>
+          <span className="shrink-0 bg-slate text-linen border-2 border-ink rounded-[10px] px-[10px] py-[6px] text-[12px] leading-4 font-extrabold">110017</span>
+        </div>
+        <div className="h-[6px] bg-ink/10" aria-hidden>
+          <div className="tf-bar h-full bg-sage" />
+        </div>
+        {/* step timeline */}
+        <ol className="flex flex-col px-4 sm:px-6 py-4" aria-label="Agent steps">
+          {AGENT_STEPS.map((s, i) => (
+            <li key={s.k} className={`tf-row-${i} relative flex gap-3 pb-3 last:pb-0`}>
+              {i < AGENT_STEPS.length - 1 && <span className="absolute left-[11px] top-6 bottom-0 w-[2px] bg-ink/20" aria-hidden />}
+              <span className="relative grid place-items-center size-6 shrink-0" aria-hidden>
+                <span className={`tf-spin tf-spin-${i} absolute inset-0 grid place-items-center rounded-full border-2 border-ink bg-sand opacity-0`}>
+                  <span className="animate-spin block size-3 rounded-full border-2 border-ink border-t-transparent" />
+                </span>
+                <span className={`tf-ok-${i} absolute inset-0 grid place-items-center rounded-full border-2 border-ink ${s.k === "done" ? "bg-slate" : "bg-sage"}`}>
+                  <Icon name="heroCheck" w={10.19} h={7.52} />
+                </span>
+              </span>
+              <span className="min-w-0 flex flex-col">
+                <span className="text-[13px] sm:text-[14px] leading-6 font-bold">{s.t}</span>
+                {s.d && <span className={`tf-detail-${i} overflow-hidden text-[12px] leading-[18px] font-semibold text-ink/80 truncate`}>{s.d}</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+      {/* result + evidence */}
+      <div className="tf-result relative mt-6 lg:mt-0 lg:absolute lg:-right-6 lg:-bottom-12 w-full lg:w-[300px] bg-sand border-2 border-ink rounded-[20px] shadow-[6px_6px_0_var(--ink)] p-[18px] flex gap-4 items-center">
+        <div className="shrink-0 w-[92px] border-2 border-ink rounded-[10px] bg-linen overflow-hidden" aria-hidden>
+          <div className="h-3 bg-ink flex items-center gap-[3px] px-[5px]">
+            <span className="size-[4px] rounded-full bg-sand" />
+            <span className="size-[4px] rounded-full bg-sage" />
+            <span className="size-[4px] rounded-full bg-linen" />
+          </div>
+          <div className="h-3 bg-slate border-b border-ink" />
+          <div className="p-[6px] flex flex-col gap-[3px]">
+            <span className="h-[5px] w-[70%] rounded-full bg-ink/70" />
+            <span className="h-[5px] w-[40%] rounded-full bg-ink/40" />
+            <span className="mt-1 self-start rounded-[3px] bg-sage px-1 text-[7px] leading-[10px] font-extrabold">IN STOCK</span>
+          </div>
+        </div>
+        <div className="min-w-0">
+          <p className="text-[11px] leading-[16.5px] font-extrabold tracking-[0.55px] uppercase">True price · 110017</p>
+          <p className="flex items-baseline gap-2">
+            <span className="text-[14px] font-bold line-through decoration-2">₹29</span>
+            <span className={`${SERIF} font-bold text-[34px] leading-[38px]`}>₹33</span>
+          </p>
+          <p className="text-[12px] leading-4 font-bold">+₹4 handling at checkout · screenshot saved</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentFlow() {
+  return (
+    <section id="agents" className="bg-deep border-b-2 border-ink py-20 lg:pt-28 lg:pb-[130px] scroll-mt-[136px] lg:scroll-mt-20">
+      <style dangerouslySetInnerHTML={{ __html: AGENT_CSS }} />
+      <div className={`${WRAP} grid gap-14 lg:grid-cols-12 items-center`}>
+        <div className="lg:col-span-5 flex flex-col items-start gap-6">
+          <span className="bg-sand border-2 border-ink rounded-[8px] shadow-[3px_3px_0_var(--ink)] px-[14px] pt-[10.5px] pb-[7.5px] text-[12px] leading-[18px] font-extrabold tracking-[2.4px] uppercase">
+            Powered by TinyFish web agents
+          </span>
+          <h2 className="text-linen text-[44px] leading-[50px] sm:text-[56px] sm:leading-[62px] xl:text-[64px] xl:leading-[70px]">
+            An agent shops
+            <span className={`block ${SERIF} italic font-normal text-sand`}>every pincode for you.</span>
+          </h2>
+          <p className="text-linen/90 text-[17px] leading-[28px] sm:text-[19px] sm:leading-[30px] font-medium max-w-[520px]">
+            Each check is a real browser session, not a scraped feed. That is how ShelfSense sees the price a shopper actually pays.
+          </p>
+          <ol className="w-full flex flex-col gap-3">
+            {AGENT_POINTS.map(([t, d], i) => (
+              <li key={t} className="flex gap-4 items-start bg-slate border-2 border-ink rounded-[16px] shadow-[4px_4px_0_var(--ink)] p-4">
+                <span className={`grid place-items-center size-9 shrink-0 rounded-[10px] border-2 border-ink bg-linen ${SERIF} font-bold text-[18px]`}>{i + 1}</span>
+                <span className="flex flex-col gap-[2px]">
+                  <span className="text-linen text-[16px] leading-6 font-bold">{t}</span>
+                  <span className="text-linen/90 text-[14px] leading-[21px] font-medium">{d}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          <Link
+            href="/agents"
+            className={`flex items-center gap-2 h-14 px-[30px] rounded-[20px] border-2 border-ink bg-sand text-[17px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}
+          >
+            Watch agents run <Icon name="heroArrow" w={13.33} h={13.33} />
+          </Link>
+        </div>
+        <div className="lg:col-span-7 lg:pl-6 lg:pb-12">
+          <AgentConsoleMock />
         </div>
       </div>
     </section>
@@ -400,7 +575,7 @@ function FloatCards() {
 
 function MobileShowcase() {
   return (
-    <section id="mobile" className="bg-sage border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-20">
+    <section id="mobile" className="bg-sage border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-[136px] lg:scroll-mt-20">
       <div className={`${WRAP} flex flex-col items-center`}>
         <div className="max-w-[760px] flex flex-col items-center">
           <Eyebrow>Live on Telegram &amp; mobile</Eyebrow>
@@ -447,7 +622,7 @@ const TILE_TITLE = `${SERIF} font-bold text-[26px] leading-[32px] sm:text-[30px]
 
 function Features() {
   return (
-    <section id="features" className="bg-ink border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-20">
+    <section id="features" className="bg-ink border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-[136px] lg:scroll-mt-20">
       <div className={`${WRAP} flex flex-col items-center gap-12 lg:gap-20`}>
         <div className="max-w-[700px] flex flex-col items-center">
           <Eyebrow className="text-sand">Intelligence engine</Eyebrow>
@@ -525,7 +700,7 @@ const PLAN_BTN = `block text-center border-2 border-ink rounded-[12px] py-[18px]
 
 function Pricing() {
   return (
-    <section id="pricing" className="bg-linen border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-20">
+    <section id="pricing" className="bg-linen border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px] scroll-mt-[136px] lg:scroll-mt-20">
       <div className={`${WRAP} flex flex-col items-center gap-12`}>
         <div className="max-w-[680px] flex flex-col items-center">
           <Eyebrow className="text-slate">Transparent plans</Eyebrow>
@@ -571,7 +746,7 @@ function Pricing() {
                 ))}
               </ul>
             </div>
-            <Link href="/settings#plan" className={`${PLAN_BTN} bg-sand shadow-[6px_6px_0_var(--ink)]`}>Start 14-day Pro trial</Link>
+            <Link href="/settings#plan" className={`${PLAN_BTN} bg-sand shadow-[6px_6px_0_var(--ink)]`}>Try Pro (test mode)</Link>
           </div>
           {/* Brand */}
           <div className={`bg-sand border-2 border-ink rounded-[20px] shadow-[6px_6px_0_var(--ink)] p-6 sm:p-[34px] lg:mt-[12.4px] lg:h-[496px] flex flex-col justify-between gap-2 ${LIFT}`}>
@@ -587,10 +762,10 @@ function Pricing() {
                 ))}
               </ul>
             </div>
-            <Link href="/settings#plan" className={`${PLAN_BTN} bg-linen shadow-[3px_3px_0_var(--ink)] mt-8 lg:mt-0`}>Contact sales</Link>
+            <Link href="/settings#plan" className={`${PLAN_BTN} bg-linen shadow-[3px_3px_0_var(--ink)] mt-8 lg:mt-0`}>Try Brand (test mode)</Link>
           </div>
         </div>
-        <p className="text-[12px] leading-4 font-bold text-center">Prices are illustrative.</p>
+        <p className="text-[12px] leading-4 font-bold text-center">Prices are illustrative. Plans switch instantly in test mode and no payment is taken.</p>
       </div>
     </section>
   );
@@ -628,8 +803,8 @@ function Footer() {
     <footer className="bg-ink py-12">
       <div className={`${WRAP} flex flex-col gap-6 md:flex-row md:items-center md:justify-between`}>
         <div className="flex flex-wrap gap-x-8 gap-y-3">
-          {["Terms of Service", "Privacy Policy", "Security"].map((t) => (
-            <Link key={t} href="/help" className="text-[14px] leading-5 font-bold text-linen/90 hover:text-linen">{t}</Link>
+          {([["Terms of Service", "/help#terms"], ["Privacy Policy", "/help#privacy"], ["Security", "/help#security"]] as const).map(([t, href]) => (
+            <Link key={t} href={href} className="text-[14px] leading-5 font-bold text-linen/90 hover:text-linen">{t}</Link>
           ))}
         </div>
         <p className="text-[14px] leading-5 font-bold text-sand">Built by Team CodeCrunchers · USICT, GGSIPU</p>
@@ -647,6 +822,7 @@ export default function Home() {
         <Marquee />
         <Problem />
         <HowItWorks />
+        <AgentFlow />
         <MobileShowcase />
         <Features />
         <Pricing />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { Weekly } from "@/lib/types";
 import { rupees } from "@/lib/format";
 
@@ -8,8 +8,15 @@ import { rupees } from "@/lib/format";
 // not hue. The seller is the one solid ink line.
 const DASHES = ["6 4", "2 4", "10 4 2 4", "1 3"];
 
+/** `YYYY-MM-DD` is a calendar day: parse it as local midnight (new Date("2024-05-01") is UTC and can shift a day). */
+function parseDay(d: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(d);
+}
+
 export default function WeeklyChart({ series }: { series: Weekly["series"] }) {
   const [hover, setHover] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const W = 640, H = 240, L = 44, R = 130, T = 14, B = 28;
   const entities = series.entities.slice(0, 5);
   const all = entities.flatMap((e) => e.prices).filter((v): v is number => v != null);
@@ -19,15 +26,34 @@ export default function WeeklyChart({ series }: { series: Weekly["series"] }) {
   const x = (i: number) => L + (i / (series.days.length - 1)) * (W - L - R);
   const y = (v: number) => T + (1 - (v - min) / (max - min)) * (H - T - B);
   const ticks = [min, (min + max) / 2, max];
-  const day = (d: string) => new Date(d).toLocaleDateString("en-IN", { weekday: "short" });
+  const day = (d: string) => parseDay(d).toLocaleDateString("en-IN", { weekday: "short" });
+  const last = series.days.length - 1;
+
+  // Pointer (mouse, pen, touch) → nearest day column.
+  function pick(e: PointerEvent<SVGSVGElement>) {
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!box || !box.width) return;
+    const vx = ((e.clientX - box.left) / box.width) * W;
+    const i = Math.round(((vx - L) / (W - L - R)) * last);
+    setHover(Math.max(0, Math.min(last, i)));
+  }
+  function onKey(e: KeyboardEvent<HTMLDivElement>) {
+    const cur = hover ?? last;
+    const next = { ArrowLeft: cur - 1, ArrowRight: cur + 1, Home: 0, End: last }[e.key];
+    if (e.key === "Escape") setHover(null);
+    else if (next != null) {
+      e.preventDefault();
+      setHover(Math.max(0, Math.min(last, next)));
+    }
+  }
   let rival = 0;
   const styled = entities.map((e) => ({ ...e, dash: e.is_seller ? undefined : DASHES[rival++ % DASHES.length] }));
 
   // Spread end labels so they never collide.
   const ends = styled
     .map((e, i) => {
-      const last = [...e.prices].reverse().find((v) => v != null);
-      return { i, y: last == null ? null : y(last) };
+      const lastPrice = [...e.prices].reverse().find((v) => v != null);
+      return { i, y: lastPrice == null ? null : y(lastPrice) };
     })
     .filter((e): e is { i: number; y: number } => e.y != null)
     .sort((a, b) => a.y - b.y);
@@ -44,8 +70,24 @@ export default function WeeklyChart({ series }: { series: Weekly["series"] }) {
           </span>
         ))}
       </div>
-      <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Average price over the last 7 days">
+      <div
+        className="relative rounded-[8px] outline-none focus-visible:ring-4 focus-visible:ring-slate/30"
+        tabIndex={0}
+        role="group"
+        aria-label="Average price over the last 7 days. Use the left and right arrow keys to read each day."
+        onKeyDown={onKey}
+        onFocus={() => setHover((h) => h ?? last)}
+        onBlur={() => setHover(null)}
+      >
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full h-auto touch-pan-y"
+          aria-hidden
+          onPointerDown={pick}
+          onPointerMove={pick}
+          onPointerLeave={(e) => e.pointerType === "mouse" && setHover(null)}
+        >
           {ticks.map((t) => (
             <g key={t}>
               <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} stroke="var(--ink)" strokeOpacity={0.1} />
@@ -73,16 +115,13 @@ export default function WeeklyChart({ series }: { series: Weekly["series"] }) {
               </g>
             );
           })}
-          {series.days.map((d, i) => (
-            <rect key={d} x={x(i) - (W - L - R) / (series.days.length - 1) / 2} y={T} width={(W - L - R) / (series.days.length - 1)} height={H - T - B} fill="transparent" onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
-          ))}
         </svg>
         {hover != null && (
           <div
             className="absolute top-2 pointer-events-none bg-white border-2 border-ink rounded-lg shadow-[3px_3px_0_var(--ink)] p-2 text-xs z-10"
             style={{ left: `${(x(hover) / W) * 100}%`, transform: `translateX(${hover > series.days.length / 2 ? "-110%" : "10%"})` }}
           >
-            <p className="font-bold mb-1">{new Date(series.days[hover]).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}</p>
+            <p className="font-bold mb-1">{parseDay(series.days[hover]).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}</p>
             {styled.map((e) => (
               <p key={`${e.name}-${e.platform}`} className="flex justify-between gap-4">
                 <span>{e.is_seller ? "You" : e.name}</span>
@@ -91,6 +130,12 @@ export default function WeeklyChart({ series }: { series: Weekly["series"] }) {
             ))}
           </div>
         )}
+        <p className="sr-only" aria-live="polite">
+          {hover != null &&
+            `${parseDay(series.days[hover]).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}: ${styled
+              .map((e) => `${e.is_seller ? "You" : e.name} ${rupees(e.prices[hover], 2)}`)
+              .join(", ")}`}
+        </p>
       </div>
     </div>
   );

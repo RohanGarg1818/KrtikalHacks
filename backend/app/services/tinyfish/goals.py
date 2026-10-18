@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+DOMAINS: dict[str, str] = {
+    "blinkit": "blinkit.com",
+    "zepto": "zeptonow.com",
+    "instamart": "swiggy.com/instamart",
+    "amazon": "amazon.in",
+    "flipkart": "flipkart.com",
+}
 SITES: dict[str, str] = {
     "blinkit": "Blinkit (blinkit.com)",
     "zepto": "Zepto (zeptonow.com)",
@@ -29,10 +36,24 @@ def site_label(platform: str) -> str:
     return SITES.get(platform, platform)
 
 
+def site_domain(platform: str) -> str:
+    return DOMAINS.get(platform, f"{platform}.com")
+
+
+def agent_target_url(url: str | None) -> str | None:
+    """The product URL an agent may open, or None to search by query instead.
+
+    Non-http(s) URLs are internal identity placeholders from the runner; they
+    only keep simulated results distinct, so agents never see them.
+    """
+    return url if url and url.startswith(("http://", "https://")) else None
+
+
 def build_check_goal(
     platform: str, pincode: str, query: str, url: str | None = None
 ) -> str:
     site = site_label(platform)
+    url = agent_target_url(url)
     if url:
         open_step = f"Open the product page at {url}."
     else:

@@ -4,9 +4,13 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, mediaUrl, useApi } from "@/lib/api";
+import { api, useApi } from "@/lib/api";
 import type { Competitor, Heatmap, HeatmapPin, Me, Overview, Pincode, PinDetail, ProductCard, Recommendation } from "@/lib/types";
-import { platformLabel, rupees, timeAgo } from "@/lib/format";
+import { platformLabel, rupees, rupeesPrecise, timeAgo } from "@/lib/format";
+import { useFocusTrap, useScrollLock } from "@/lib/a11y";
+import AgentConsole from "@/components/agent/AgentConsole";
+import AgentReplay from "@/components/agent/AgentReplay";
+import { ScreenshotThumb } from "@/components/agent/parts";
 import { useRun } from "@/lib/useRun";
 import HeatmapMap from "@/components/heatmap";
 import ProductHeader, { RecheckButton } from "@/components/ProductHeader";
@@ -55,17 +59,15 @@ function HeatmapView() {
     (async () => {
       let hit = list.find((p) => p.status_strip.some((s) => s.pincode === pincodeParam));
       if (!hit) {
-        for (const p of list) {
-          try {
-            const sel = await api<{ pincodes: string[] }>(`/products/${p.id}/pincodes`);
-            if (sel.pincodes.includes(pincodeParam)) {
-              hit = p;
-              break;
-            }
-          } catch {
-            /* skip products we can't read */
-          }
-        }
+        // Ask every product in parallel; first match in list order wins.
+        const tracked = await Promise.all(
+          list.map((p) =>
+            api<{ pincodes: string[] }>(`/products/${p.id}/pincodes`)
+              .then((sel) => sel.pincodes.includes(pincodeParam))
+              .catch(() => false),
+          ),
+        );
+        hit = list[tracked.indexOf(true)];
       }
       if (cancelled) return;
       if (hit) router.replace(`/heatmap?product=${hit.id}&pincode=${pincodeParam}`);
@@ -131,6 +133,7 @@ function ProductHeatmap({
   const catalog = useApi<Pincode[]>("/pincodes");
   const selection = useApi<{ platforms: string[]; pincodes: string[] }>(`/products/${productId}/pincodes`);
   const competitors = useApi<Competitor[]>(`/products/${productId}/competitors`);
+  const competitorNames = useMemo(() => new Map((competitors.data ?? []).map((c) => [c.id, c.name])), [competitors.data]);
   const qs = new URLSearchParams({ snapshot, ...(platform ? { platform } : {}) }).toString();
   const heatmap = useApi<Heatmap>(`/products/${productId}/heatmap?${qs}`, { keepPreviousData: true });
   const overview = useApi<Overview>(`/products/${productId}/overview`);
@@ -175,6 +178,8 @@ function ProductHeatmap({
   const rivalsOn = (pl: string) => (competitors.data ?? []).filter((c) => c.confirmed && c.platform === pl).length;
   const credits = targets.length * runPlatforms.reduce((n, pl) => n + 1 + rivalsOn(pl), 0);
   const prog = run.progress;
+  const progLabel = prog ? `${Math.min(prog.done + prog.failed, prog.total)}/${prog.total}` : "";
+  const [consoleOpen, setConsoleOpen] = useState(true);
 
   // Toasts for the re-check lifecycle (the inline "Checking… n/N" status stays as is).
   const runId = prog?.runId;
@@ -182,7 +187,10 @@ function ProductHeatmap({
   const progRef = useRef(prog);
   progRef.current = prog;
   useEffect(() => {
-    if (runId) toast.info("Re-check started — pins update live");
+    if (runId) {
+      toast.info("Re-check started — pins update live");
+      setConsoleOpen(true);
+    }
   }, [runId]);
   useEffect(() => {
     const p = progRef.current;
@@ -210,7 +218,7 @@ function ProductHeatmap({
 
   const titleSwitch =
     products.length > 1 ? (
-      <span className="relative inline-flex max-w-full items-center gap-3">
+      <span className="relative inline-flex max-w-full items-center gap-3 rounded-[8px] has-[select:focus-visible]:outline-[3px] has-[select:focus-visible]:outline-offset-4 has-[select:focus-visible]:outline-slate">
         <span className="min-w-0">{product?.name}</span>
         <img src={`${A}/imgContainer11.svg`} alt="" width={18} height={11} className="shrink-0" />
         <select
@@ -236,14 +244,14 @@ function ProductHeatmap({
           <div className="flex flex-wrap items-center gap-3">
             {run.running && prog && (
               <span className="chip bg-sand">
-                <span className="dot-typing"><span /><span /><span /></span> Live · {prog.done + prog.failed}/{prog.total}
+                <span className="dot-typing"><span /><span /><span /></span> Live · {progLabel}
               </span>
             )}
             <RecheckButton
               onClick={() => run.start()}
               running={run.running}
               disabled={product?.paused}
-              label={run.running && prog ? `Checking… ${prog.done + prog.failed}/${prog.total}` : undefined}
+              label={run.running && prog ? `Checking… ${progLabel}` : undefined}
             />
           </div>
         }
@@ -253,6 +261,35 @@ function ProductHeatmap({
       )}
       {run.error && <p className="card mb-6 bg-sand/50 p-3 text-sm font-semibold">{run.error}</p>}
       {product?.paused && <p className="card mb-6 bg-sand/50 p-3 text-sm font-semibold">This product is paused — resume it in Settings to run checks.</p>}
+
+      {run.run && (
+        <section className="mb-8" aria-label="TinyFish agents">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-[15px] font-semibold">
+              {run.running ? "Agents are checking this product right now" : "Last re-check"}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-expanded={consoleOpen}
+                aria-controls="heatmap-agent-console"
+                onClick={() => setConsoleOpen((o) => !o)}
+              >
+                {consoleOpen ? "Hide agents" : "Show agents"}
+              </button>
+              {!run.running && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={run.reset}>
+                  Dismiss
+                </button>
+              )}
+            </div>
+          </div>
+          <div id="heatmap-agent-console" hidden={!consoleOpen}>
+            {consoleOpen && <AgentConsole run={run.run} names={competitorNames} />}
+          </div>
+        </section>
+      )}
 
       {/* Filters */}
       <section className="flex flex-wrap items-center justify-between gap-4 pb-8">
@@ -415,7 +452,7 @@ function ProductHeatmap({
         >
           <img src={`${A}/imgContainer21.svg`} alt="" width={12} height={15} />
           {run.running && prog
-            ? `Checking… ${prog.done + prog.failed}/${prog.total}`
+            ? `Checking… ${progLabel}`
             : targets.length
               ? `Re-check selected · ${credits} credit${credits === 1 ? "" : "s"}`
               : "Select a pin to re-check"}
@@ -564,16 +601,16 @@ function PinCallout({
   const label = STATUS_META[pin.status]?.label ?? pin.status;
   return (
     <>
-      <button onClick={onClose} aria-label="Close" className="absolute right-2 top-1.5 text-[18px] font-bold leading-none text-ink/60 hover:text-ink">×</button>
+      <button type="button" onClick={onClose} aria-label="Close" className="absolute right-2 top-1.5 text-[18px] font-bold leading-none text-ink/60 hover:text-ink">×</button>
       <p className="pr-4 text-[15px] font-bold leading-[22.5px]">
         {pin.pincode}{pin.area ? ` · ${pin.area}` : ""}
       </p>
       <p className="text-[14px] font-medium leading-[21px]">
-        {label} · {rupees(pin.price)} · Checked {timeAgo(pin.checked_at)}
+        {label} · {rupeesPrecise(pin.price)} · Checked {timeAgo(pin.checked_at)}
       </p>
       {(showRival || pin.rival_price != null) && (
         <p className="text-[13px] font-medium leading-[19.5px] text-deep">
-          {platformLabel(pin.platform)} · Rival {rupees(pin.rival_price)}
+          {platformLabel(pin.platform)} · Rival {rupeesPrecise(pin.rival_price)}
         </p>
       )}
       <div className="mt-2.5 flex gap-2">
@@ -598,7 +635,7 @@ function Tile({ label, value, className }: { label: string; value: number; class
   return (
     <div className={`flex flex-col justify-between gap-2 rounded-[16px] border-2 border-ink p-[18px] text-ink shadow-[4px_4px_0_var(--ink)] ${className}`}>
       <p className="text-[14px] font-semibold uppercase leading-[21px] tracking-[0.7px]">{label}</p>
-      <p className="pt-2 font-display text-[48px] font-semibold leading-[48px]"><CountUp value={value} duration={0.8} /></p>
+      <p className="pt-2 font-display text-[48px] font-semibold leading-[48px]"><CountUp value={Math.max(0, Math.round(value || 0))} duration={0.8} /></p>
     </div>
   );
 }
@@ -698,7 +735,8 @@ function WorstAreas({
       ) : (
         <ul className="stagger">
           {rows.map((p) => {
-            const gap = p.price != null && p.rival_price != null ? Math.round(p.price - p.rival_price) : null;
+            // Keep paise: a ₹0.50 gap must not read as "Same as rival".
+            const gap = p.price != null && p.rival_price != null ? Math.round((p.price - p.rival_price) * 100) / 100 : null;
             return (
               <li key={`${p.platform}-${p.pincode}`} className="border-b border-ink/20 last:border-b-0">
                 <button
@@ -724,9 +762,9 @@ function WorstAreas({
                     </span>
                   </span>
                   <span className="shrink-0 text-right">
-                    <span className="block text-[15px] font-semibold leading-[18.75px]">{rupees(p.price)}</span>
+                    <span className="block text-[15px] font-semibold leading-[18.75px]">{rupeesPrecise(p.price)}</span>
                     <span className="block text-[13px] font-semibold leading-[19.5px]">
-                      {gap == null ? platformLabel(p.platform) : gap > 0 ? `₹${gap} above rival` : gap < 0 ? `₹${-gap} below rival` : "Same as rival"}
+                      {gap == null ? platformLabel(p.platform) : gap > 0 ? `${rupeesPrecise(gap)} above rival` : gap < 0 ? `${rupeesPrecise(-gap)} below rival` : "Same as rival"}
                     </span>
                   </span>
                 </button>
@@ -754,19 +792,12 @@ function PinDetailModal({
   inRecheck: boolean;
   toggleRecheck: () => void;
 }) {
-  const [shot, setShot] = useState<string | null>(null);
+  const [replayFor, setReplayFor] = useState<string | null>(null);
   const mobile = useIsMobile();
   const dialog = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && (shot ? setShot(null) : onClose());
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [shot, onClose]);
-  useEffect(() => {
-    const back = document.activeElement as HTMLElement | null;
-    dialog.current?.focus({ preventScroll: true });
-    return () => back?.focus?.({ preventScroll: true });
-  }, []);
+  // Tab stays inside the drawer, Esc closes it (the screenshot lightbox stacks its own trap on top).
+  useFocusTrap(dialog, true, { onEscape: onClose, initialFocus: "[data-close]" });
+  useScrollLock(true);
   // Drawer: slides in from the right (from the bottom on phones) over a fading backdrop.
   const off = mobile ? { y: "100%" } : { x: "100%" };
   return (
@@ -785,19 +816,28 @@ function PinDetailModal({
         animate={{ x: 0, y: 0, transition: { duration: 0.42, ease: EASE } }}
         exit={{ ...off, transition: { duration: 0.28, ease: [0.4, 0, 1, 1] } }}
       >
-      <div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Pincode detail" className="card pointer-events-auto w-full max-w-lg p-5 outline-none" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialog}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pin-detail-title"
+        className="card pointer-events-auto w-full max-w-lg p-5 outline-none"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="label">Pincode</p>
-            <h3 className="text-2xl font-semibold">{detail ? `${detail.pincode} · ${detail.area}` : "…"}</h3>
+            <h3 id="pin-detail-title" className="text-2xl font-semibold">{detail ? `${detail.pincode} · ${detail.area}` : "Loading pincode…"}</h3>
             {detail && <p className="text-sm text-deep">{detail.city}</p>}
           </div>
-          <button onClick={onClose} className="text-2xl font-bold leading-none" aria-label="Close">×</button>
+          <button type="button" data-close onClick={onClose} className="text-2xl font-bold leading-none" aria-label="Close pincode detail">×</button>
         </div>
         {error ? <ErrorCard error={error} /> : !detail && <Skeleton className="mt-3 h-40" />}
         <div className="mt-3 space-y-4">
           {detail?.platforms.map((pl) => {
-            const shotUrl = mediaUrl(pl.seller.screenshot_url);
+            const replayOpen = replayFor === pl.platform;
+            const hasTrace = !!(pl.seller.result_id || pl.seller.run_id);
             return (
               <div key={pl.platform} className="rounded-xl border-2 border-ink p-3">
                 <div className="flex items-center justify-between">
@@ -805,47 +845,62 @@ function PinDetailModal({
                   <StatusBadge status={pl.status} />
                 </div>
                 <table className="mt-2 w-full text-sm">
+                  <caption className="sr-only">Prices on {platformLabel(pl.platform)} at {detail.pincode}</caption>
                   <tbody>
                     <tr className="font-semibold">
-                      <td>You</td>
-                      <td className="text-right">{pl.seller.in_stock === false ? "✕ OOS" : rupees(pl.seller.price, 2)}</td>
+                      <th scope="row" className="text-left font-semibold">You</th>
+                      <td className="text-right">{pl.seller.in_stock === false ? "✕ Out of stock" : rupees(pl.seller.price, 2)}</td>
                       <td className="w-12 text-right text-xs">{pl.seller.eta != null ? `${pl.seller.eta}m` : ""}</td>
                     </tr>
                     {pl.rivals.map((r) => (
                       <tr key={r.competitor_id}>
-                        <td className="max-w-40 truncate">{r.name}</td>
-                        <td className="text-right">{r.in_stock === false ? "✕ OOS" : rupees(r.price, 2)}</td>
+                        <th scope="row" className="max-w-40 truncate text-left font-normal">{r.name}</th>
+                        <td className="text-right">{r.in_stock === false ? "✕ Out of stock" : rupees(r.price, 2)}</td>
                         <td className="w-12 text-right text-xs">{r.eta != null ? `${r.eta}m` : ""}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div className="mt-2 flex items-center justify-between text-xs text-deep">
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-deep">
                   <span>checked {timeAgo(pl.seller.checked_at)}</span>
-                  {shotUrl && (
-                    <button className="font-semibold text-ink underline" onClick={() => setShot(shotUrl)}>View screenshot</button>
-                  )}
+                  <span className="flex gap-3">
+                    {hasTrace && (
+                      <button
+                        type="button"
+                        className="font-semibold text-ink underline"
+                        aria-expanded={replayOpen}
+                        onClick={() => setReplayFor(replayOpen ? null : pl.platform)}
+                      >
+                        {replayOpen ? "Hide agent replay" : "Agent replay"}
+                      </button>
+                    )}
+                  </span>
                 </div>
+                {replayOpen ? (
+                  <div className="mt-3 border-t-2 border-ink/20 pt-3">
+                    <AgentReplay
+                      resultId={pl.seller.result_id}
+                      runId={pl.seller.run_id}
+                      platform={pl.platform}
+                      pincode={detail.pincode}
+                    />
+                  </div>
+                ) : (
+                  pl.seller.screenshot_url && (
+                    <div className="mt-3 max-w-[240px]">
+                      <ScreenshotThumb url={pl.seller.screenshot_url} alt={`${platformLabel(pl.platform)} at ${detail.pincode} — evidence screenshot`} />
+                    </div>
+                  )
+                )}
               </div>
             );
           })}
         </div>
-        <button className={`btn btn-sm mt-4 w-full ${inRecheck ? "btn-sage" : "btn-ghost"}`} onClick={toggleRecheck}>
+        <button type="button" className={`btn btn-sm mt-4 w-full ${inRecheck ? "btn-sage" : "btn-ghost"}`} onClick={toggleRecheck} aria-pressed={inRecheck}>
           {inRecheck ? "✓ Selected for re-check" : "Select for re-check"}
         </button>
       </div>
       </motion.div>
-      {shot && (
-        <div className="fixed inset-0 z-[2100] grid place-items-center bg-ink/60 p-4" onClick={(e) => { e.stopPropagation(); setShot(null); }}>
-          <div className="card w-full max-w-2xl p-3" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="label">Evidence screenshot</p>
-              <button onClick={() => setShot(null)} className="text-xl font-bold" aria-label="Close">×</button>
-            </div>
-            <img src={shot} alt="Screenshot of the product page at this pincode" className="min-h-40 w-full rounded-lg border-2 border-ink bg-linen" />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

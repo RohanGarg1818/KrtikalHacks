@@ -25,8 +25,9 @@ async def health(
             "gemini": settings.gemini_enabled,
             "telegram": settings.telegram_enabled,
             "storage": settings.storage_enabled,
-            "dev_auth": settings.dev_auth_enabled,
         },
+        auth_mode=settings.auth_mode,
+        tinyfish_mode=settings.tinyfish_mode,
         bot_running=bool(getattr(request.app.state, "bot_running", False)),
         scheduler_running=bool(getattr(request.app.state, "scheduler_running", False)),
     )

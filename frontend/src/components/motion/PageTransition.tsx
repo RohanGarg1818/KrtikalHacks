@@ -13,7 +13,7 @@ const ABOVE = "inset(0% 0% 100% 0%)";
 /**
  * Slate Blue colour wipe between routes: 300ms up to cover, navigate, then 300ms up
  * and away once the new route has rendered. Internal link clicks are intercepted in
- * the capture phase (before Next's <Link> handler); back/forward, modified clicks,
+ * the capture phase and default-prevented (Next's <Link> then skips them); back/forward, modified clicks,
  * new tabs, hash links and same-path query changes navigate normally. Reduced motion:
  * no wipe at all. Only clip-path is animated.
  */
@@ -55,8 +55,9 @@ export default function PageTransition() {
 
       const el = panel.current;
       if (!el) return;
+      // preventDefault alone is enough: Next <Link> skips defaultPrevented clicks, and other
+      // listeners (menus closing on navigation, analytics) still see the event.
       e.preventDefault();
-      e.stopPropagation();
       const dest = url.pathname + url.search + url.hash;
       pending.current = dest;
       el.style.visibility = "visible";

@@ -33,17 +33,20 @@ export default function ProductHeader({
   const { data: product } = useApi<Product>(`/products/${productId}`);
   return (
     <div className="flex flex-wrap items-start justify-between gap-4 pb-6">
-      <div className="min-w-0">
-        <h1 className="text-[36px] md:text-[48px] leading-[1.1] tracking-[-1.2px]">
-          {title ?? product?.name ?? <Skeleton className="h-12 w-96" />}
-        </h1>
-        <nav className="flex gap-5 sm:gap-8 items-center pt-4 overflow-x-auto">
+      <div className="min-w-0 flex-1">
+        {(title ?? product?.name) ? (
+          <h1 className="text-[36px] md:text-[48px] leading-[1.1] tracking-[-1.2px] break-words">{title ?? product?.name}</h1>
+        ) : (
+          <Skeleton className="h-10 md:h-[53px] w-full max-w-96" />
+        )}
+        <nav className="flex gap-5 sm:gap-8 items-center pt-4 overflow-x-auto" aria-label="Product sections">
           {TABS.map((t) => {
             const on = t.key === active;
             return (
               <Link
                 key={t.key}
                 href={t.href(productId)}
+                aria-current={on ? "page" : undefined}
                 className={`text-[16px] leading-6 shrink-0 ${on ? "font-semibold text-slate border-b-[3px] border-slate pt-1 pb-[7px]" : "font-medium text-ink py-1 hover:text-slate transition-colors"}`}
               >
                 {t.label}

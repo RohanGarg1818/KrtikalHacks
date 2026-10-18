@@ -8,21 +8,40 @@ import { platformLabel, timeAgo } from "@/lib/format";
 
 const A = "/figma/product";
 
-export type ProductState = "attention" | "healthy" | "paused";
+/** A product card from `GET /products` (full pair counts + backend `state` per the API contract). */
+export type Card = ProductCard;
 
-/** Same rules as the backend `filter` param (GET /products). */
-export function productState(p: ProductCard): ProductState {
+/** UI state of a card; derived from the backend `state`. */
+export type CardState = "attention" | "healthy" | "paused" | "new";
+
+const FROM_API: Record<NonNullable<ProductCard["state"]>, CardState> = {
+  ok: "healthy",
+  attention: "attention",
+  paused: "paused",
+  never_checked: "new",
+};
+
+/** Uses the backend `state`; falls back to the status strip for older API responses. */
+export function productState(p: Card): CardState {
+  if (p.state && FROM_API[p.state]) return FROM_API[p.state];
   if (p.paused) return "paused";
+  if (!p.status_strip.length) return "new";
   return p.status_strip.some((s) => s.status !== "in_stock") ? "attention" : "healthy";
 }
 
-export function coverage(p: ProductCard) {
+/** Platform × pincode pairs where the product is on the shelf (in stock, incl. price-gap pairs). */
+export function coverage(p: Card) {
+  if (p.total_pairs != null) {
+    const total = p.total_pairs;
+    const ok = Math.min(total, (p.ok_pairs ?? 0) + (p.gap_pairs ?? 0));
+    return { ok, total, ratio: total ? ok / total : 0 };
+  }
   const total = p.status_strip.length;
   const ok = p.status_strip.filter((s) => s.status === "in_stock" || s.status === "price_gap").length;
   return { ok, total, ratio: total ? ok / total : 0 };
 }
 
-export function platformsOf(p: ProductCard) {
+export function platformsOf(p: Card) {
   return [...new Set(p.status_strip.map((s) => s.platform))];
 }
 
@@ -46,9 +65,9 @@ const ICONS: { re: RegExp; src: string; w: number; h: number }[] = [
   { re: /detergent|surf|soap|wash|cleaner|shampoo/i, src: "imgContainer13", w: 16, h: 20 },
 ];
 
-const TILE_BG: Record<ProductState, string> = { attention: "bg-sand", healthy: "bg-sage", paused: "bg-linen" };
+const TILE_BG: Record<CardState, string> = { attention: "bg-sand", healthy: "bg-sage", paused: "bg-linen", new: "bg-linen" };
 
-export function ProductIcon({ p }: { p: ProductCard }) {
+export function ProductIcon({ p }: { p: Card }) {
   const state = productState(p);
   const match = ICONS.find((i) => i.re.test(`${p.name} ${p.search_query}`));
   const photo = !match ? mediaUrl(p.image_url) : null;
@@ -65,7 +84,7 @@ export function ProductIcon({ p }: { p: ProductCard }) {
   );
 }
 
-export function StatusPill({ state }: { state: ProductState }) {
+export function StatusPill({ state }: { state: CardState }) {
   const base = "inline-flex items-center gap-[6px] px-[14px] py-[6px] rounded-full border-2 border-ink text-[14px] leading-[21px] font-semibold whitespace-nowrap";
   if (state === "attention")
     return (
@@ -81,6 +100,13 @@ export function StatusPill({ state }: { state: ProductState }) {
         Healthy
       </span>
     );
+  if (state === "new")
+    return (
+      <span className={`${base} bg-linen border-dotted`}>
+        <span aria-hidden className="text-[12px] leading-none">…</span>
+        Not checked yet
+      </span>
+    );
   return (
     <span className={`${base} bg-linen`}>
       <span aria-hidden className="text-[12px] leading-none">‖</span>
@@ -89,41 +115,54 @@ export function StatusPill({ state }: { state: ProductState }) {
   );
 }
 
-const DOT_ORDER: Record<string, number> = { in_stock: 0, out_of_stock: 1, price_gap: 2 };
+const DOT_ORDER: Record<string, number> = { in_stock: 0, out_of_stock: 1, price_gap: 2, failed: 3 };
+const DOT_LABEL: Record<string, string> = { in_stock: "In stock", out_of_stock: "Out of stock", price_gap: "Price gap", failed: "Check failed" };
 
-function Dot({ status }: { status: string }) {
-  if (status === "in_stock") return <img src={`${A}/imgBackgroundBorder.svg`} alt="In stock" title="In stock" width={16} height={19} className="shrink-0" />;
+function Dot({ status, where }: { status: string; where: string }) {
+  const name = `${where}: ${DOT_LABEL[status] ?? "Not checked recently"}`;
+  if (status === "in_stock") return <img src={`${A}/imgBackgroundBorder.svg`} alt={name} title={name} width={16} height={19} className="shrink-0" />;
   if (status === "out_of_stock")
-    return <span title="Out of stock" aria-label="Out of stock" className="shrink-0 size-4 rounded-full border-2 border-dashed border-ink bg-linen" />;
+    return <span role="img" title={name} aria-label={name} className="shrink-0 size-4 rounded-full border-2 border-dashed border-ink bg-linen" />;
   if (status === "price_gap")
     return (
-      <span title="Price gap" aria-label="Price gap" className="shrink-0 grid place-items-center w-4 h-[19px] rounded-full border-2 border-ink bg-sand text-[10px] leading-[15px] font-bold">
-        ₹
+      <span role="img" title={name} aria-label={name} className="shrink-0 grid place-items-center w-4 h-[19px] rounded-full border-2 border-ink bg-sand text-[10px] leading-[15px] font-bold">
+        <span aria-hidden>₹</span>
       </span>
     );
-  return <span title="Not checked recently" aria-label="Not checked recently" className="shrink-0 size-4 rounded-full border-2 border-ink bg-linen opacity-50" />;
+  if (status === "failed")
+    return (
+      <span role="img" title={name} aria-label={name} className="shrink-0 grid place-items-center size-4 rounded-full border-2 border-ink bg-deep text-linen text-[9px] font-bold">
+        <span aria-hidden>!</span>
+      </span>
+    );
+  return <span role="img" title={name} aria-label={name} className="shrink-0 size-4 rounded-full border-2 border-dotted border-ink bg-linen" />;
 }
 
 /** Compact 6-dot strip: problems are always kept, in-stock dots fill the rest; "+N" when truncated. */
-export function MiniStrip({ strip, max = 6 }: { strip: ProductCard["status_strip"]; max?: number }) {
-  if (!strip.length) return <p className="text-[13px] text-ink/70">No checks yet</p>;
+export function MiniStrip({ strip, max = 6, total }: { strip: ProductCard["status_strip"]; max?: number; total?: number }) {
+  if (!strip.length) return <p className="text-[13px] text-ink/75">No checks yet</p>;
   const problems = strip.filter((s) => s.status !== "in_stock");
   const ok = strip.filter((s) => s.status === "in_stock");
   const picked = [...problems.slice(0, max), ...ok.slice(0, Math.max(0, max - problems.length))].sort(
-    (a, b) => (DOT_ORDER[a.status] ?? 3) - (DOT_ORDER[b.status] ?? 3),
+    (a, b) => (DOT_ORDER[a.status] ?? 4) - (DOT_ORDER[b.status] ?? 4),
   );
-  const extra = strip.length - picked.length;
+  const extra = Math.max(total ?? 0, strip.length) - picked.length;
   return (
     <div className="flex items-center gap-[6px] h-4">
       {picked.map((s) => (
-        <Dot key={`${s.platform}-${s.pincode}`} status={s.status} />
+        <Dot key={`${s.platform}-${s.pincode}`} status={s.status} where={`${s.pincode} · ${platformLabel(s.platform)}`} />
       ))}
-      {extra > 0 && <span className="text-[12px] font-semibold text-ink/70">+{extra}</span>}
+      {extra > 0 && (
+        <span className="text-[12px] font-semibold text-ink/75">
+          +{extra}
+          <span className="sr-only"> more</span>
+        </span>
+      )}
     </div>
   );
 }
 
-function Telegram({ p }: { p: ProductCard }) {
+function Telegram({ p }: { p: Card }) {
   return (
     <Link href={`/products/${p.id}/telegram`} className="inline-flex items-center gap-[6px] hover:underline underline-offset-4">
       {p.telegram_connected ? (
@@ -134,7 +173,7 @@ function Telegram({ p }: { p: ProductCard }) {
       ) : (
         <>
           <span className="shrink-0 size-[10px] rounded-full bg-ink/30 border border-ink" />
-          <span className="text-[15px] leading-[22.5px] text-ink/60">Not connected</span>
+          <span className="text-[15px] leading-[22.5px] text-ink/75">Not connected</span>
         </>
       )}
     </Link>
@@ -144,7 +183,7 @@ function Telegram({ p }: { p: ProductCard }) {
 const TH = "text-left text-[14px] leading-[21px] font-bold tracking-[0.7px] uppercase px-3 py-[18px] align-bottom";
 const TD = "px-3 py-[18px] align-middle";
 
-export function ProductTable({ rows }: { rows: ProductCard[] }) {
+export function ProductTable({ rows }: { rows: Card[] }) {
   return (
     <div className="bg-linen border-2 border-ink rounded-[20px] shadow-[6px_6px_0_var(--ink)] overflow-hidden">
       <div className="overflow-x-auto">
@@ -177,9 +216,9 @@ export function ProductTable({ rows }: { rows: ProductCard[] }) {
                   <td className={TD}>
                     <div className="flex flex-col gap-[6px]">
                       <span className="text-[15px] leading-[22.5px] font-semibold whitespace-nowrap">
-                        {c.ok} of {c.total} pincodes
+                        {c.ok} of {c.total} in stock
                       </span>
-                      <MiniStrip strip={p.status_strip} />
+                      <MiniStrip strip={p.status_strip} total={p.total_pairs} />
                     </div>
                   </td>
                   <td className={`${TD} text-[16px] leading-6 font-semibold whitespace-nowrap`}>{priceVsRivals(p.price_position_vs_avg_rival)}</td>
@@ -201,7 +240,7 @@ export function ProductTable({ rows }: { rows: ProductCard[] }) {
 }
 
 /** Grid / mobile card, same composition as the dashboard product cards. */
-export function ProductGridCard({ p }: { p: ProductCard }) {
+export function ProductGridCard({ p }: { p: Card }) {
   const c = coverage(p);
   const platforms = platformsOf(p).map(platformLabel).join(" · ");
   return (
@@ -216,9 +255,9 @@ export function ProductGridCard({ p }: { p: ProductCard }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col gap-[6px]">
           <span className="text-[15px] leading-[22.5px] font-semibold">
-            {c.ok} of {c.total} pincodes
+            {c.ok} of {c.total} in stock
           </span>
-          <MiniStrip strip={p.status_strip} />
+          <MiniStrip strip={p.status_strip} total={p.total_pairs} />
         </div>
         <StatusPill state={productState(p)} />
       </div>

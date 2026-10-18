@@ -2,11 +2,14 @@
 
 Status rules (applied per platform cell, worst cell wins for a pin row):
   stale         latest seller result failed, missing, or older than 24h
+                (``stale_reason`` says which: failed / missing / old)
   out_of_stock  seller in_stock is False
   price_gap     in stock AND seller price >= 1.05 * cheapest in-stock rival
+                (rival prices older than the 24h freshness window are ignored)
   in_stock      otherwise
 Hot zone: >= 3 out_of_stock pincodes within 3 km (haversine) -> cluster centre.
-Snapshots (6h/24h/7d) use the latest result at or before (now - offset).
+Snapshots (6h/24h/7d) use the latest result at or before (now - offset);
+history older than 14 days before the snapshot is never scanned.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ SNAPSHOT_OFFSETS: dict[str, timedelta] = {
     "7d": timedelta(days=7),
 }
 STALE_AFTER = timedelta(hours=24)
+HISTORY_WINDOW = timedelta(days=14)
 PRICE_GAP_RATIO = 1.05
 HOT_ZONE_RADIUS_KM = 3.0
 HOT_ZONE_MIN_PINS = 3
@@ -72,6 +76,39 @@ def classify_pin_status(
     ):
         return "price_gap"
     return "in_stock"
+
+
+def stale_reason(
+    seller_status: str | None, seller_checked_at: datetime | None, cutoff: datetime
+) -> str | None:
+    """Why a cell is stale ("missing", "failed", "old"), or None when it is fresh."""
+    if seller_status is None or seller_checked_at is None:
+        return "missing"
+    if seller_status != "ok":
+        return "failed"
+    if seller_checked_at < cutoff - STALE_AFTER:
+        return "old"
+    return None
+
+
+def cheapest_fresh_rivals(
+    rival_latest: dict[tuple, CheckResult], cutoff: datetime
+) -> dict[tuple[str, str], float]:
+    """Cheapest in-stock rival price per (platform, pincode) within the freshness window."""
+    cheapest: dict[tuple[str, str], float] = {}
+    for (_competitor_id, platform, pincode), row in rival_latest.items():
+        if (
+            row.status != "ok"
+            or row.in_stock is not True
+            or row.price is None
+            or row.checked_at < cutoff - STALE_AFTER
+        ):
+            continue
+        key = (platform, pincode)
+        current = cheapest.get(key)
+        if current is None or row.price < current:
+            cheapest[key] = row.price
+    return cheapest
 
 
 def find_hot_zones(pins: Sequence[PinPoint]) -> list[dict]:
@@ -154,6 +191,7 @@ async def _seller_rows(
                     CheckResult.pincode.in_(pincodes),
                     CheckResult.platform.in_(platforms),
                     CheckResult.checked_at <= cutoff,
+                    CheckResult.checked_at >= cutoff - HISTORY_WINDOW,
                 )
                 .order_by(CheckResult.checked_at.desc())
             )
@@ -178,6 +216,7 @@ async def _rival_rows(
                     CheckResult.pincode.in_(pincodes),
                     CheckResult.platform.in_(platforms),
                     CheckResult.checked_at <= cutoff,
+                    CheckResult.checked_at >= cutoff - HISTORY_WINDOW,
                 )
                 .order_by(CheckResult.checked_at.desc())
             )
@@ -203,6 +242,7 @@ async def compute_heatmap(
             "out_of_stock": 0,
             "price_gap": 0,
             "stale": 0,
+            "failed": 0,
             "total": 0,
         },
         "hot_zones": [],
@@ -221,14 +261,7 @@ async def compute_heatmap(
         await _rival_rows(session, product_id, pincodes, platforms, cutoff),
         lambda row: (row.competitor_id, row.platform, row.pincode),
     )
-    cheapest_rival: dict[tuple[str, str], float] = {}
-    for (competitor_id, cell_platform, pincode), row in rival_latest.items():
-        if row.status != "ok" or row.in_stock is not True or row.price is None:
-            continue
-        key = (cell_platform, pincode)
-        current = cheapest_rival.get(key)
-        if current is None or row.price < current:
-            cheapest_rival[key] = row.price
+    cheapest_rival = cheapest_fresh_rivals(rival_latest, cutoff)
 
     geo = {
         row.code: row
@@ -256,6 +289,13 @@ async def compute_heatmap(
                     cell_platform,
                     {
                         "status": status,
+                        "stale_reason": stale_reason(
+                            seller.status if seller else None,
+                            seller.checked_at if seller else None,
+                            cutoff,
+                        )
+                        if status == "stale"
+                        else None,
                         "price": seller.price if seller and seller.status == "ok" else None,
                         "mrp": seller.mrp if seller and seller.status == "ok" else None,
                         "eta": seller.eta_minutes if seller and seller.status == "ok" else None,
@@ -274,6 +314,7 @@ async def compute_heatmap(
                 "lat": pin.lat if pin else None,
                 "lng": pin.lng if pin else None,
                 "status": chosen["status"],
+                "stale_reason": chosen["stale_reason"],
                 "price": chosen["price"],
                 "rival_price": chosen["rival_price"],
                 "mrp": chosen["mrp"],
@@ -283,10 +324,19 @@ async def compute_heatmap(
             }
         )
 
-    summary = {"in_stock": 0, "out_of_stock": 0, "price_gap": 0, "stale": 0, "total": 0}
+    summary = {
+        "in_stock": 0,
+        "out_of_stock": 0,
+        "price_gap": 0,
+        "stale": 0,
+        "failed": 0,
+        "total": 0,
+    }
     for pin in pins:
         summary[pin["status"]] += 1
         summary["total"] += 1
+        if pin["stale_reason"] == "failed":
+            summary["failed"] += 1
     hot_zone_points = [
         PinPoint(pin["pincode"], pin["lat"], pin["lng"], pin["status"])
         for pin in pins
@@ -334,7 +384,12 @@ async def compute_pin_detail(
             )
         ).all()
     }
-    cheapest: dict[str, float] = {}
+    cheapest = {
+        platform_key: price
+        for (platform_key, _pincode), price in cheapest_fresh_rivals(
+            rival_latest, cutoff
+        ).items()
+    }
     rivals_by_platform: dict[str, list[dict]] = {item: [] for item in platforms}
     for (competitor_id, cell_platform, _), row in rival_latest.items():
         rivals_by_platform.setdefault(cell_platform, []).append(
@@ -350,10 +405,6 @@ async def compute_pin_detail(
                 "checked_at": row.checked_at,
             }
         )
-        if row.status == "ok" and row.in_stock is True and row.price is not None:
-            current = cheapest.get(cell_platform)
-            if current is None or row.price < current:
-                cheapest[cell_platform] = row.price
 
     platform_rows: list[dict] = []
     for cell_platform in platforms:
