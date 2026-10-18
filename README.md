@@ -12,6 +12,7 @@ ShelfSense is an AI assistant that shows online sellers where they're losing sal
 
 - [The problem](#the-problem)
 - [How it works](#how-it-works)
+- [How we use TinyFish](#how-we-use-tinyfish)
 - [Features](#features)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
@@ -45,6 +46,44 @@ ShelfSense is an AI assistant that shows online sellers where they're losing sal
 4. **The heatmap lights up:** each pincode becomes a pin: in stock, out of stock, or price gap.
 5. **The AI explains:** for example, *"You're out of stock in 4 South Delhi pincodes. At checkout you're ₹2 cheaper than the rival, so don't cut price. Restock."*
 6. **Approve on Telegram:** recommendations arrive with an **Approve** button. Nothing changes without the seller's approval.
+
+---
+
+## How we use TinyFish
+
+TinyFish web agents are ShelfSense's data layer: they visit the real quick-commerce and marketplace sites the way a shopper does and return structured, verifiable results. All calls go through the official [`tinyfish` Python SDK](https://docs.tinyfish.ai).
+
+| App | TinyFish API | What happens | Live-tested (Delhi, Oct 2026) |
+|---|---|---|---|
+| **Zepto** | Agent API (stealth browser) | The agent opens Zepto, sets the delivery pincode in the site's location picker, searches the product and reads price, stock and delivery time | ✅ 110017, 110016, 110048 |
+| **Instamart** | Agent API (stealth) + Browser Context Profile | Same flow, inside a saved team session (Instamart asks anonymous visitors to log in) | ✅ 110017, 110016, 110048 |
+| **Amazon.in** | Search API + Fetch API | Search finds the product page; Fetch reads it in seconds (price, MRP, stock, delivery date) | ✅ |
+| **Flipkart** | Search API + Fetch API | Same as Amazon | ✅ |
+| **Blinkit** | Agent API (stealth) | Blinkit blocks automated browsers, so it is shown as *Unavailable* rather than faked | ❌ blocked |
+
+**Why two methods?** Agent runs can type a pincode, so quick-commerce results are truly per pincode, but they take 3–8 minutes and cost a credit. Fetch is fast and free but reads the page as TinyFish's server sees it, so Amazon and Flipkart results are listing-wide and labelled that way in the app.
+
+**Every result is verifiable.** Each check stores the agent's step-by-step trace, its own notes (e.g. *"the 500 ml pack was sold out; closest match is the 1 L pack at ₹74"*) and a proof screenshot. All of it is shown on the **Agents** page and attached to Telegram alerts.
+
+**Safety and cost controls**
+- Read-only goals: agents never add to cart, open checkout, log in with a shopper's account or enter payment details.
+- Live runs are capped (`TINYFISH_LIVE_MAX_JOBS_PER_RUN`), each listing is fetched once per run, and agent runs time out and are cancelled.
+- If a live check is blocked, ShelfSense falls back to the last real result (marked *Cached*), and `TINYFISH_DEMO=true` replays saved live results so a demo never breaks.
+- The API key stays on the server; the frontend never sees it.
+
+**Where to look in the code**
+- [`backend/app/services/tinyfish/tinyfish_client.py`](backend/app/services/tinyfish/tinyfish_client.py): SDK client, agent goals, structured output, error handling
+- [`backend/app/services/tinyfish/marketplace.py`](backend/app/services/tinyfish/marketplace.py): Amazon and Flipkart Fetch parsers
+- [`backend/app/services/tinyfish/demo_cache.py`](backend/app/services/tinyfish/demo_cache.py): cached fallback and demo mode
+- [`backend/data/demo_results.json`](backend/data/demo_results.json) and [`demo_screenshots/`](backend/data/demo_screenshots/): real results captured from live runs
+- [`backend/tests/test_tinyfish_client.py`](backend/tests/test_tinyfish_client.py): tests, including parsers checked against real page text
+
+**Try one live check** (from `backend/`, with `TINYFISH_API_KEY` in `.env`):
+
+```bash
+python -m scripts.check_pincode --app flipkart --pincode 110017 --product "Haldiram Bhujia Sev 200 g"   # free, ~10 s
+python -m scripts.check_pincode --app zepto --pincode 110017 --product "Amul Taaza Toned Milk 500 ml"  # 1 credit, 3-8 min
+```
 
 ---
 
