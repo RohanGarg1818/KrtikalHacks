@@ -15,11 +15,31 @@ class Settings(BaseSettings):
     mock_mode: bool | None = None
     database_url: str = "sqlite+aiosqlite:///./shelfsense.db"
     tinyfish_api_key: str = ""
-    tinyfish_agent_base_url: str = ""
-    tinyfish_search_base_url: str = ""
-    tinyfish_fetch_base_url: str = ""
     tinyfish_max_concurrency: int = Field(default=2, ge=1)
-    tinyfish_agent_timeout_seconds: float = Field(default=120.0, gt=0)
+    tinyfish_agent_timeout_seconds: float = Field(default=600.0, gt=0)
+    # Whole budget for one Browser API pincode check, after the session exists.
+    tinyfish_browser_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Proxy exit country for browser sessions (TinyFish defaults to US).
+    tinyfish_proxy_country: str = "IN"
+    # Live runs with more jobs than this are refused (0 = no limit): each live
+    # check is a minutes-long paid agent run.
+    tinyfish_live_max_jobs_per_run: int = Field(default=6, ge=0)
+    # Browser Context Profile IDs (prof_...) with a saved, signed-in team
+    # session per app. Blank = anonymous stealth browser.
+    tinyfish_profile_blinkit: str = ""
+    tinyfish_profile_zepto: str = ""
+    tinyfish_profile_instamart: str = ""
+    # Apps checked when TinyFish is live. Blinkit is left out because it blocks
+    # automated browsers (live-tested 2026-10-18); add it back here if that changes.
+    tinyfish_live_platforms: str = "zepto,instamart,amazon,flipkart"
+    # true = answer checks from data/demo_results.json (real results saved from
+    # earlier live runs) instead of calling TinyFish. Failed live checks always
+    # fall back to that cache when it has the same app + pincode.
+    tinyfish_demo: bool = False
+
+    @property
+    def live_platforms(self) -> set[str]:
+        return {p.strip() for p in self.tinyfish_live_platforms.split(",") if p.strip()}
     gemini_api_key: str = ""
     gemini_model: str = ""
     telegram_bot_token: str = ""

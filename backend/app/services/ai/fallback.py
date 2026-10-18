@@ -343,7 +343,8 @@ class FallbackAIProvider:
             parts.append(
                 f"You've used {used} credits today on the {plan.title()} plan"
                 + (f"; {max(budget - used, 0)} of {budget} remain." if budget else " with no daily limit.")
-                + " Each pincode check uses one credit."
+                + " Each Zepto or Instamart check is a TinyFish agent run and uses one"
+                " credit; Amazon and Flipkart page reads are free."
             )
             evidence.append(ChatEvidence(metric="credits_used_today", value=used))
         elif any(k in text for k in ("run", "check", "scan")):

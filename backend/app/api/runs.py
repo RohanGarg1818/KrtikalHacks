@@ -18,9 +18,10 @@ from ..config import Settings, get_settings
 from ..db import SessionLocal, get_session
 from ..deps import get_current_user, get_stream_user
 from ..models.checks import CheckResult, CheckRun
-from ..models.product import Product, ProductPincode
+from ..models.product import Pincode, Product, ProductPincode
 from ..models.user import User
 from ..schemas.runs import (
+    AppStatus,
     CheckResultDetail,
     RunCreate,
     RunCreated,
@@ -87,11 +88,16 @@ async def run_modes(
 ) -> dict[str, str]:
     """Agent mode per run as recorded on its results (`raw.agent.mode`).
 
-    Runs without agent traces (seeded history, runs still queued) report the
-    mode the process is in now.
+    Runs whose results carry no agent trace (seeded history) are
+    "simulated"; runs with no results yet report the mode the process is in now.
     """
     recorded: dict[str, str] = {}
     if run_ids:
+        with_results = await session.scalars(
+            select(CheckResult.run_id).where(CheckResult.run_id.in_(run_ids)).distinct()
+        )
+        for run_id in with_results.all():
+            recorded[run_id] = "simulated"
         mode_expr = CheckResult.raw["agent"]["mode"].as_string()
         rows = await session.execute(
             select(CheckResult.run_id, mode_expr)
@@ -99,7 +105,7 @@ async def run_modes(
             .distinct()
         )
         for run_id, mode in rows.all():
-            recorded.setdefault(run_id, mode)
+            recorded[run_id] = mode
     return {run_id: recorded.get(run_id, settings.tinyfish_mode) for run_id in run_ids}
 
 
@@ -146,11 +152,6 @@ async def start_run(
     if product.paused:
         raise HTTPException(
             status_code=422, detail="Paused products cannot be checked"
-        )
-    if settings.tinyfish_enabled and not settings.tinyfish_agent_base_url:
-        raise HTTPException(
-            status_code=503,
-            detail="TINYFISH_AGENT_BASE_URL is required when TinyFish is enabled",
         )
     selection = list(
         (
@@ -268,6 +269,14 @@ async def get_run(
         )
     ).all()
     modes = await run_modes(session, [run_id], settings)
+    areas = {
+        row.code: row.area_name
+        for row in (
+            await session.scalars(
+                select(Pincode).where(Pincode.code.in_({row.pincode for row in results}))
+            )
+        ).all()
+    }
     return RunDetail(
         **RunResponse.model_validate(run).model_dump(),
         mode=modes[run_id],
@@ -282,10 +291,42 @@ async def get_run(
                 price=row.price,
                 in_stock=row.in_stock,
                 screenshot_url=screenshot_url_for(row.id, row.screenshot_url, settings),
+                mrp=row.mrp,
+                eta_minutes=row.eta_minutes,
+                area=areas.get(row.pincode),
+                error=row.error,
+                checked_at=row.checked_at,
+                **result_provenance(row.raw or {}),
             )
             for row in results
         ],
     )
+
+
+SOURCE_METHODS = {
+    "tinyfish_agent_api": "agent",
+    "tinyfish_fetch_api": "fetch",
+    "tinyfish_browser_api": "browser",
+    "demo_cache": "cached",
+}
+
+
+def result_provenance(raw: dict) -> dict:
+    """How a stored result was obtained, for the Agents page."""
+    agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
+    method = SOURCE_METHODS.get(str(raw.get("source")), "simulated")
+    url = raw.get("url")
+    notes = raw.get("notes")
+    if isinstance(notes, str):
+        notes = [notes]
+    return {
+        "method": method,
+        "pincode_specific": raw.get("pincode_specific", True) is not False,
+        "source_url": url if isinstance(url, str) and url.startswith("http") else None,
+        "delivery_text": raw.get("delivery_text"),
+        "notes": [str(note) for note in notes or [] if note],
+        "step_count": len(agent.get("steps") or []),
+    }
 
 
 @router.get("/runs/{run_id}/stream")
@@ -432,3 +473,64 @@ async def tinyfish_usage(
         runs_today=runs_today or 0,
         success_rate_7d=round(succeeded / total, 4) if total else None,
     )
+
+
+APP_LABELS = {
+    "blinkit": "Blinkit",
+    "zepto": "Zepto",
+    "instamart": "Swiggy Instamart",
+    "amazon": "Amazon.in",
+    "flipkart": "Flipkart",
+}
+UNAVAILABLE_REASONS = {
+    "blinkit": "Blinkit blocks automated browsers, including TinyFish stealth mode",
+}
+
+
+@router.get("/tinyfish/apps", response_model=list[AppStatus])
+async def tinyfish_apps(
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> list[AppStatus]:
+    """Live / Cached / Unavailable status and check method for every app."""
+    from ..services.tinyfish.demo_cache import load_cache
+    from ..services.tinyfish.tinyfish_client import CHECK_STRATEGY
+
+    cached = {entry.get("platform") for entry in load_cache()}
+    statuses: list[AppStatus] = []
+    for platform, label in APP_LABELS.items():
+        method = CHECK_STRATEGY.get(platform, "none")
+        pincode_specific = method == "agent"
+        if not settings.tinyfish_enabled and not settings.tinyfish_demo:
+            status_, detail = "simulated", "No TinyFish key: simulated results"
+            method = "simulated"
+        elif settings.tinyfish_demo:
+            if platform in cached:
+                status_, detail = "cached", "Demo mode: replaying saved live results"
+            else:
+                status_, detail = "unavailable", "Demo mode: no saved results for this app"
+        elif platform in settings.live_platforms:
+            status_ = "live"
+            detail = (
+                "TinyFish agent sets each pincode (3-8 min per check)"
+                if method == "agent"
+                else "TinyFish Fetch reads the listing in seconds (not per pincode)"
+            )
+            if platform in cached:
+                detail += "; falls back to saved results if blocked"
+        elif platform in cached:
+            status_, detail = "cached", UNAVAILABLE_REASONS.get(platform, "Off for live checks") + "; showing saved results"
+        else:
+            status_ = "unavailable"
+            detail = UNAVAILABLE_REASONS.get(platform, "Not enabled in TINYFISH_LIVE_PLATFORMS")
+        statuses.append(
+            AppStatus(
+                platform=platform,
+                label=label,
+                status=status_,
+                method=method,
+                pincode_specific=pincode_specific,
+                detail=detail,
+            )
+        )
+    return statuses

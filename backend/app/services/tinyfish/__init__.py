@@ -1,4 +1,4 @@
-"""TinyFish integration: client interface, mock implementation, HTTP skeleton."""
+"""TinyFish integration: client interface, simulated agent, live SDK client."""
 
 from .base import (
     CheckResult,

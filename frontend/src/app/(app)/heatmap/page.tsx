@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, useApi } from "@/lib/api";
 import type { Competitor, Heatmap, HeatmapPin, Me, Overview, Pincode, PinDetail, ProductCard, Recommendation } from "@/lib/types";
-import { platformLabel, rupees, rupeesPrecise, timeAgo } from "@/lib/format";
+import { platformLabel, rupees, rupeesPrecise, timeAgo, etaLabel } from "@/lib/format";
 import { useFocusTrap, useScrollLock } from "@/lib/a11y";
 import AgentConsole from "@/components/agent/AgentConsole";
 import AgentReplay from "@/components/agent/AgentReplay";
@@ -850,13 +850,13 @@ function PinDetailModal({
                     <tr className="font-semibold">
                       <th scope="row" className="text-left font-semibold">You</th>
                       <td className="text-right">{pl.seller.in_stock === false ? "✕ Out of stock" : rupees(pl.seller.price, 2)}</td>
-                      <td className="w-12 text-right text-xs">{pl.seller.eta != null ? `${pl.seller.eta}m` : ""}</td>
+                      <td className="w-12 text-right text-xs">{etaLabel(pl.seller.eta)}</td>
                     </tr>
                     {pl.rivals.map((r) => (
                       <tr key={r.competitor_id}>
                         <th scope="row" className="max-w-40 truncate text-left font-normal">{r.name}</th>
                         <td className="text-right">{r.in_stock === false ? "✕ Out of stock" : rupees(r.price, 2)}</td>
-                        <td className="w-12 text-right text-xs">{r.eta != null ? `${r.eta}m` : ""}</td>
+                        <td className="w-12 text-right text-xs">{etaLabel(r.eta)}</td>
                       </tr>
                     ))}
                   </tbody>

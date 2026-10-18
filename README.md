@@ -161,7 +161,7 @@ shelfsense/
 │   │   ├── schemas/            # Pydantic schemas
 │   │   ├── api/                # routers
 │   │   ├── services/
-│   │   │   ├── tinyfish/       # base, http_client, mock_client, goals
+│   │   │   ├── tinyfish/       # base, tinyfish_client (SDK), mock_client, goals
 │   │   │   ├── runner.py  events.py  heatmap.py  insights.py
 │   │   │   ├── ai/             # gemini, fallback, prompts
 │   │   │   ├── alerts.py  telegram_bot.py  storage.py  plans.py
@@ -237,7 +237,7 @@ Open http://localhost:3000.
 | `MOCK_MODE` | Force mock mode on/off (auto when keys are missing) | No |
 | `DATABASE_URL` | Postgres URL (`postgresql+asyncpg://…`); SQLite is used if empty | For Supabase |
 | `TINYFISH_API_KEY` | TinyFish API key | Yes, for real checks |
-| `TINYFISH_AGENT_BASE_URL` · `TINYFISH_SEARCH_BASE_URL` · `TINYFISH_FETCH_BASE_URL` | TinyFish endpoints (from the TinyFish docs) | Yes, for real checks |
+| `TINYFISH_PROXY_COUNTRY` · `TINYFISH_BROWSER_TIMEOUT_SECONDS` | Browser session exit country (default `IN`) and per-check budget | No |
 | `TINYFISH_MAX_CONCURRENCY` | Parallel runs (2 on the free plan) | No |
 | `GEMINI_API_KEY` · `GEMINI_MODEL` | Gemini AI | Yes, for real AI |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_BOT_USERNAME` | Telegram bot | Yes, for Telegram |
@@ -275,7 +275,7 @@ The app runs **without any keys**. Each missing integration switches to a safe f
 
 ## Connecting the real services
 
-1. **TinyFish:** create an account, copy the API key into `.env`, and set the base URLs from the TinyFish docs. All request/response mapping lives in `backend/app/services/tinyfish/http_client.py`; confirm the exact format there first.
+1. **TinyFish:** create an account and copy the API key into `.env` as `TINYFISH_API_KEY`. The backend uses the official `tinyfish` SDK (no base URLs to set); all TinyFish calls live in `backend/app/services/tinyfish/tinyfish_client.py`.
    **Do the feasibility test first:** check that an agent can set a pincode and read price and stock on each quick-commerce site.
 2. **Gemini:** create a key in Google AI Studio and set `GEMINI_API_KEY` and `GEMINI_MODEL`.
 3. **Telegram:** message **@BotFather** → `/newbot`, then set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME`. The bot uses long polling, so no public URL is needed.
@@ -363,7 +363,8 @@ Backend tests cover: health, product CRUD, plan limits, the full check pipeline 
 
 ## Responsible use
 
-- Reads **public** product pages only; never logs into shopper accounts and **never places orders**.
+- Reads product pages only and is strictly read-only: never adds to cart, opens checkout or **places orders**.
+- Never uses a shopper's own accounts. Where an app requires sign-in (Instamart), a ShelfSense team test account is used through a TinyFish Browser Context Profile.
 - Requests are rate-limited and spaced out.
 - Every action requires **human approval**; guardrails prevent unsafe price suggestions.
 - AI answers are restricted to stored data and validated before being shown.

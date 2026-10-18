@@ -8,6 +8,9 @@ import { toast } from "@/lib/toast";
 import type { Me, Pincode, Plans, Product } from "@/lib/types";
 import { useDialogA11y } from "./ui";
 
+/** Apps checked live by TinyFish (Blinkit blocks automated browsers). */
+const DEFAULT_PLATFORMS = ["zepto", "instamart", "amazon", "flipkart"];
+
 interface Suggestion { name: string; platform: string; url: string | null; search_query: string | null; confirmed: boolean }
 
 const STEP_TITLES = ["Add a product", "Confirm competitors", "Where do you sell?"];
@@ -102,7 +105,7 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   const [picked, setPicked] = useState<Set<number>>(new Set());
   // Competitors already POSTed, keyed by platform + name, so retries never duplicate them.
   const [saved, setSaved] = useState<Set<string>>(new Set());
-  const [platforms, setPlatforms] = useState<Set<string>>(new Set(["blinkit"]));
+  const [platforms, setPlatforms] = useState<Set<string>>(new Set(DEFAULT_PLATFORMS));
   const [codes, setCodes] = useState<Set<string>>(new Set());
   const [pinFilter, setPinFilter] = useState("");
   const [pinsSaved, setPinsSaved] = useState(false);
@@ -378,7 +381,7 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
                   Platforms
                 </p>
                 <div className="flex flex-wrap gap-2" role="group" aria-labelledby="add-product-platforms">
-                  {(plans.data?.platforms ?? ["blinkit", "zepto", "instamart"]).map((p) => (
+                  {(plans.data?.platforms ?? ["zepto", "instamart", "amazon", "flipkart", "blinkit"]).map((p) => (
                     <button
                       key={p}
                       type="button"

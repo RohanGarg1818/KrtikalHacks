@@ -20,9 +20,11 @@ HELP_TOPICS: list[dict] = [
         "body": (
             "A run checks your product and each confirmed competitor across "
             "every selected platform and pincode. Free plans run weekly, Pro "
-            "every 3 hours. Each successful check uses one credit; failed "
-            "checks are retried once and never bill credits. Watch progress "
-            "live on the run page via the event stream."
+            "every 3 hours. Zepto and Instamart checks are TinyFish agent "
+            "runs (3-8 minutes each, one credit each, including a failed "
+            "attempt); Amazon and Flipkart pages are read with the Fetch API "
+            "in seconds at no credit cost. Blinkit blocks automated browsers, "
+            "so it is not checked live. Watch every step live on the Agents page."
         ),
     },
     {
