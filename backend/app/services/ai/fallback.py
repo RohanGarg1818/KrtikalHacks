@@ -87,6 +87,39 @@ def _gap_pct(context: dict) -> float | None:
     return round((avg_price / rival - 1) * 100, 1)
 
 
+def _portfolio_answer(
+    portfolio: list[dict], text: str
+) -> tuple[str, list[ChatEvidence], list[ChatAction]] | None:
+    """Stock / price / heatmap answers covering every product, one line each."""
+    wants_stock = any(k in text for k in ("stock", "oos", "out of", "availability", "heatmap", "area"))
+    wants_price = any(k in text for k in ("price", "cost", "expensive", "cheap"))
+    if not (wants_stock or wants_price):
+        return None
+    lines: list[str] = []
+    evidence: list[ChatEvidence] = []
+    for item in portfolio:
+        name = item["product_name"]
+        bits: list[str] = []
+        if wants_stock:
+            bits.append(f"{item.get('in_stock') or 0} of {item.get('total_pins') or 0} pins in stock")
+            oos = item.get("oos_pins") or []
+            bits.append("out of stock in " + ", ".join(oos[:5]) if oos else "no stock-outs")
+        if wants_price:
+            avg, rival = item.get("avg_price"), item.get("cheapest_rival")
+            price = f"avg {_fmt_money(avg)}"
+            if rival is not None:
+                price += f" vs cheapest rival {_fmt_money(rival)}"
+            bits.append(price)
+        lines.append(f"• {name}: " + "; ".join(bits) + ".")
+        evidence.append(ChatEvidence(metric=f"in_stock:{name}"[:60], value=item.get("in_stock")))
+    worst = max(portfolio, key=lambda item: len(item.get("oos_pins") or []))
+    actions = [
+        ChatAction(label=f"Open {worst['product_name'][:30]} heatmap", path=f"/heatmap?product={worst['product_id']}")
+    ] if worst.get("oos_pins") else []
+    header = f"Across your {len(portfolio)} products:"
+    return "\n".join([header, *lines]), evidence, actions
+
+
 class FallbackAIProvider:
     name = "fallback"
 
@@ -282,6 +315,12 @@ class FallbackAIProvider:
         actions: list[ChatAction] = []
         product_id = context.get("product_id")
         parts: list[str] = []
+        portfolio = context.get("portfolio") or []
+        if len(portfolio) > 1:
+            answered = _portfolio_answer(portfolio, text)
+            if answered is not None:
+                reply, portfolio_evidence, portfolio_actions = answered
+                return ChatOut(reply=reply, evidence=portfolio_evidence, actions=portfolio_actions)
         if any(k in text for k in ("price", "cost", "expensive", "cheap")):
             avg_price = context.get("avg_price")
             rival = context.get("cheapest_rival")

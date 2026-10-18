@@ -108,12 +108,30 @@ async def _unfocused_context(session: AsyncSession, user_id: str, message: str) 
     named = max(products, key=mention_score, default=None)
     if named is not None and mention_score(named) > 0:
         return await build_context(session, named.id) or dict(EMPTY_CONTEXT)
-    best: dict | None = None
-    for product in products:
-        built = await build_context(session, product.id)
-        if built is not None and (best is None or len(built["oos_pins"]) > len(best["oos_pins"])):
-            best = built
-    return best or dict(EMPTY_CONTEXT)
+    built_all = [
+        built for product in products if (built := await build_context(session, product.id))
+    ]
+    if not built_all:
+        return dict(EMPTY_CONTEXT)
+    # Worst product first, so single-product phrasing still leads with what matters.
+    built_all.sort(key=lambda c: len(c["oos_pins"]), reverse=True)
+    context = dict(built_all[0])
+    if len(built_all) > 1:
+        context["product_name"] = "your products"
+        context["portfolio"] = [
+            {
+                "product_id": c["product_id"],
+                "product_name": c["product_name"],
+                "in_stock": c["in_stock"],
+                "total_pins": c["total_pins"],
+                "oos_pins": c["oos_pins"],
+                "avg_price": c["avg_price"],
+                "cheapest_rival": c["cheapest_rival"],
+                "price_gap_pins": c.get("price_gap_pins", 0),
+            }
+            for c in built_all
+        ]
+    return context
 
 
 async def _usage_context(session: AsyncSession, user_id: str) -> dict:
