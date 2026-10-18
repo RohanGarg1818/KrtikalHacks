@@ -67,3 +67,18 @@ async def test_cancel_button_runs_nothing() -> None:
     update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=1, type="private"))
     assert await handle_check_callback(update, None) is True
     assert query.edits == ["Check cancelled. Nothing was run."]
+
+
+@pytest.mark.asyncio
+async def test_all_products_chat_covers_every_product_and_naming_one_focuses() -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+        names = [p["name"] for p in (await client.get("/api/products")).json()]
+        overall = (await client.post("/api/chat", json={"message": "Where am I out of stock?"})).json()
+        focused = (await client.post("/api/chat", json={"message": "Is Paper Boat Aamras in stock?"})).json()
+    assert overall["answer"].startswith("Across your")
+    assert sum(name in overall["answer"] for name in names) >= 2
+    assert "Paper Boat" in focused["answer"] and "Across your" not in focused["answer"]

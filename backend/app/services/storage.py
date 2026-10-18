@@ -84,7 +84,7 @@ async def _save_local(data: bytes, path: str) -> str:
 async def _upload_supabase(
     settings: Settings, data: bytes, path: str, content_type: str
 ) -> str | None:
-    # TODO(supabase): confirm the Storage object endpoint and public URL format.
+    # Supabase Storage: POST /storage/v1/object/{bucket}/{path}; public bucket URL below.
     endpoint = (
         f"{settings.supabase_url}/storage/v1/object/"
         f"{settings.supabase_storage_bucket}/{path}"
@@ -93,12 +93,11 @@ async def _upload_supabase(
         "Authorization": f"Bearer {settings.supabase_service_key}",
         "apikey": settings.supabase_service_key,
         "Content-Type": content_type,
+        "x-upsert": "true",
     }
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                endpoint, params={"upsert": "true"}, content=data, headers=headers
-            )
+            response = await client.post(endpoint, content=data, headers=headers)
             response.raise_for_status()
     except httpx.HTTPError as exc:
         logger.warning("Supabase storage upload failed: %s", exc)

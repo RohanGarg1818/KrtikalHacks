@@ -107,6 +107,15 @@ It streams each agent step, prints the result JSON (`app, pincode, in_stock, pri
 
 ## Postgres / Supabase
 
+**Supabase setup (tested against PostgreSQL 17):**
+
+1. Create a Supabase project. In Project Settings -> Database -> Connection string, copy the **Session pooler** URL (port 5432).
+2. Put it in `backend/.env` with the prefix changed to `postgresql+asyncpg://` (never commit it).
+3. From `backend/`: `alembic upgrade head` then `python -m scripts.seed`, then restart the API.
+4. Optional screenshots in Supabase Storage: create a **public** bucket `screenshots` and set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`. Without them screenshots stay in `backend/media/`.
+
+Leave `SUPABASE_JWT_SECRET` blank for the demo; setting it turns on Supabase login for every request. Connections are health-checked before use (the pooler closes idle ones), and port 6543 (transaction pooler) disables prepared-statement caching automatically.
+
 Set `DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname` to run against Postgres instead of SQLite; the engine selects the driver from the URL and no code changes are needed. Alembic runs through the same async driver as the app (aiosqlite/asyncpg), so no sync driver is needed. The initial revision is explicit `op.create_table` DDL using only generic types (`String`, `Float`, `JSON`, timezone-aware `DateTime`), with `ON DELETE` rules and a partial unique index allowing one active run per product; SQLite runs in batch mode and enforces foreign keys (`PRAGMA foreign_keys=ON`). UUID primary keys are stored as 36-character strings for portability.
 
 ## Operations

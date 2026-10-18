@@ -25,8 +25,21 @@ def enable_sqlite_foreign_keys(engine: Engine) -> None:
         cursor.close()
 
 
+def engine_options(url: str) -> dict:
+    """Connection options for hosted Postgres (Supabase) vs local SQLite."""
+    if url.startswith("sqlite"):
+        return {}
+    options: dict = {"pool_pre_ping": True, "pool_recycle": 1800}
+    # Supabase's transaction pooler (port 6543) cannot keep prepared statements.
+    if ":6543/" in url:
+        options["connect_args"] = {"statement_cache_size": 0, "prepared_statement_cache_size": 0}
+    return options
+
+
 settings = get_settings()
-engine = create_async_engine(settings.database_url, future=True)
+engine = create_async_engine(
+    settings.database_url, future=True, **engine_options(settings.database_url)
+)
 enable_sqlite_foreign_keys(engine.sync_engine)
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
