@@ -11,6 +11,9 @@ from app.services.telegram_features import (
     AppSummary,
     compare_text,
     handle_check_callback,
+    last_checked_text,
+    report_text,
+    time_ago,
 )
 
 
@@ -102,3 +105,20 @@ async def test_plain_messages_get_a_reply_instead_of_silence() -> None:
     )
     await _handle_text(update, None)
     assert message.replies and "not connected" in message.replies[0]
+
+
+def test_report_covers_all_four_apps_with_last_checked() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    apps = [
+        AppSummary("zepto", 17.0, 2, 3, False, now - timedelta(minutes=5)),
+        AppSummary("flipkart", None, 0, 3, True, now - timedelta(hours=2)),
+    ]
+    text = report_text("Amul", apps, now)
+    assert "✅ Zepto: ₹17 · 2/3 pins in stock · 5 min ago" in text
+    assert "❌ Flipkart: out of stock (listing-wide) · 2 h ago" in text
+    assert "⚪ Instamart: not checked yet" in text and "⚪ Amazon: not checked yet" in text
+    assert "🕒 Last checked: 5 min ago" in text
+    assert "Instamart never" in last_checked_text("Amul", apps, now)
+    assert time_ago(None) == "never"
