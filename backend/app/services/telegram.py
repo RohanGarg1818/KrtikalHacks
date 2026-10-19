@@ -200,6 +200,22 @@ async def redeem_link_code(
     return link
 
 
+async def link_code_problem(session: AsyncSession, code_value: str) -> str:
+    """Why a code did not link, in words the person in the chat can act on."""
+    fresh = (
+        "Ask the product owner to open the product's Telegram tab on the ShelfSense "
+        "website and send you a NEW link (each link works for one chat, once)."
+    )
+    row = await session.get(TelegramLinkCode, code_value)
+    if row is None:
+        return f"That code doesn't exist. Check you copied it fully. {fresh}"
+    if row.used_at is not None:
+        return f"That link was already used by another chat. {fresh}"
+    if row.expires_at <= utcnow():
+        return f"That link expired (links last {LINK_CODE_TTL_MINUTES} minutes). {fresh}"
+    return f"That code could not be used. {fresh}"
+
+
 async def unlink_link(session: AsyncSession, link_id: str) -> bool:
     """Delete one link by id; the chat stays linked to its other products."""
     result = await session.execute(delete(TelegramLink).where(TelegramLink.id == link_id))
@@ -369,10 +385,7 @@ async def _handle_start(update, context) -> None:
             telegram_user_id=str(sender.id) if sender is not None else None,
         )
         if link is None:
-            await message.reply_text(
-                "That code is invalid or expired. Generate a fresh one on your "
-                "ShelfSense product page and try again."
-            )
+            await message.reply_text(await link_code_problem(session, args[0].strip()))
             return
         product = await session.get(Product, link.product_id)
         name = product.name if product else "your product"

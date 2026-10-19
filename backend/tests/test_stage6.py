@@ -31,6 +31,7 @@ from app.services.scheduler import build_briefing_text, is_due
 from app.services.telegram import (
     build_deeplink,
     create_link_code,
+    link_code_problem,
     redeem_link_code,
 )
 
@@ -372,6 +373,8 @@ async def test_link_code_flow_and_expiry(monkeypatch: pytest.MonkeyPatch) -> Non
 
         reuse = await redeem_link_code(session, code_value=code.code, chat_id="43")
         assert reuse is None
+        assert "already used by another chat" in await link_code_problem(session, code.code)
+        assert "doesn't exist" in await link_code_problem(session, "SS-NOPE-NOPE")
 
         expired_code = f"SS-9999-EXP{uuid4().hex[:4].upper()}"
         expired = TelegramLinkCode(
