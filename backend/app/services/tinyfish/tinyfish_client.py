@@ -57,6 +57,7 @@ from tinyfish import (
     RateLimitError,
     RunStatus,
     StartedEvent,
+    StreamingUrlEvent,
 )
 
 from ...config import Settings
@@ -78,7 +79,7 @@ from .marketplace import (
     fetched_pages,
     listing_urls,
 )
-from .pack import pack_label, same_variant
+from .pack import pack_label, same_pack, same_variant
 
 if TYPE_CHECKING:
     from playwright.async_api import Locator, Page
@@ -352,12 +353,17 @@ def url_slug_words(url: str | None) -> str:
     if not url:
         return ""
     path = url.split("?")[0].split("://")[-1].split("/", 1)[-1]
-    slug = path.split("/p/")[0].split("/dp/")[0].rsplit("/", 1)[-1]
-    return slug.replace("-", " ")
+    # The descriptive part is the segment with the most words:
+    # /pn/amul-taaza-toned-milk/pvid/123, /mi-3i-power-bank/p/itm..., /JBL-Go-3/dp/B08...
+    segments = [segment for segment in path.split("/") if segment]
+    slug = max(segments, key=lambda segment: segment.count("-"), default="")
+    return slug.replace("-", " ") if "-" in slug else ""
 
 
 def not_listed_note(query: str, matched: str | None, price: float | None) -> str:
-    wanted = pack_label(query) or "This exact model"
+    # Name the pack only when the pack is what differs ("500 ml not listed").
+    pack_differs = matched is not None and same_pack(query, matched) is False
+    wanted = (pack_label(query) if pack_differs else None) or "This exact product"
     closest = f"; closest listed: {matched}" if matched else ""
     if matched and price is not None:
         closest += f" at {format_rupees(price)}"
@@ -705,6 +711,9 @@ class TinyFishLiveClient:
                         await trace.step(
                             "navigate", f"Opening {site_domain(platform)}", flow.home_url
                         )
+                    elif isinstance(event, StreamingUrlEvent):
+                        # Live view of the agent's browser for the Agents page.
+                        await trace.step("stream", "Live browser view ready", event.streaming_url)
                     elif isinstance(event, ProgressEvent):
                         await trace.step(_step_kind(event.purpose), event.purpose[:140])
                     elif isinstance(event, CompleteEvent):

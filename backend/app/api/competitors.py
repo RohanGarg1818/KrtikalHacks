@@ -135,10 +135,11 @@ async def discover(
 ) -> CompetitorDiscoveryResponse:
     product = await get_owned_product(session, user.id, product_id)
     query = payload.query if payload and payload.query else product.search_query
-    suggestions = [as_suggestion(item) for item in discover_competitors(query)]
+    found, source = await discover_competitors(query, product.brand, product.name)
+    suggestions = [as_suggestion(item) for item in found]
     return CompetitorDiscoveryResponse(
         suggestions=[item for item in suggestions if item is not None],
-        source="mock",
+        source=source,
     )
 
 

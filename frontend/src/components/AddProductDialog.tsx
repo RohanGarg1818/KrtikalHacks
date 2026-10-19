@@ -148,10 +148,23 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function createProduct() {
-    const { name, link } = parseInput(input);
+    const parsed = parseInput(input);
+    const { link } = parsed;
     await run(async () => {
+      let name = parsed.name;
+      let brandValue = brand.trim();
+      if (link) {
+        // Read the real product title from the link (TinyFish Fetch; free) instead of guessing.
+        try {
+          const found = await api<{ name: string | null; brand: string | null }>("/listings/resolve", { method: "POST", json: { url: link.url } });
+          if (found.name) name = found.name;
+          if (!brandValue && found.brand) brandValue = found.brand;
+        } catch {
+          /* keep the name guessed from the link */
+        }
+      }
       let p = product;
-      const fields = { name, brand: brand.trim() || null, search_query: name };
+      const fields = { name, brand: brandValue || null, search_query: name };
       if (!p) {
         // check_frequency is omitted on purpose: the backend defaults it to the plan minimum.
         p = await api<Product>("/products", { method: "POST", json: fields });

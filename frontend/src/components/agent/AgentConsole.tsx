@@ -6,6 +6,7 @@ import { duration, platformLabel, rupees } from "@/lib/format";
 import type { Health, TinyFishMode } from "@/lib/types";
 import type { AgentJobState, RunState } from "@/lib/useRun";
 import { ModeBadge, PlatformMark, ScreenshotThumb, TruePriceBreakdown, jobTitle, whoLabel } from "./parts";
+import LiveBrowser from "./LiveBrowser";
 import StepTimeline from "./StepTimeline";
 
 /** Re-renders every `ms` while `active`; returns Date.now(). */
@@ -160,6 +161,8 @@ export default function AgentConsole({ run, names, title = "Agent console", repl
           </div>
         )}
       </div>
+
+      {live && !replay && <LiveBrowser jobs={jobs} />}
 
       {/* Job grid */}
       <div className="p-4 sm:p-[22px] bg-linen">

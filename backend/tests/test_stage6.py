@@ -15,7 +15,7 @@ from app.deps import get_current_user
 from app.main import create_app
 from app.models.base import utcnow
 from app.models.checks import ChangeEvent, CheckResult, CheckRun
-from app.models.intelligence import Alert
+from app.models.intelligence import Alert, AlertRule
 from app.models.product import Competitor, Product, ProductPincode
 from app.models.telegram import TelegramLink, TelegramLinkCode
 from app.models.user import Subscription, User, UserSettings
@@ -186,7 +186,7 @@ def test_default_alert_rules_cover_all_kinds() -> None:
     kinds = {rule["kind"] for rule in rules}
     assert kinds == {"oos_any", "price_change_pct", "rating_below", "price_gap_pct"}
     price_rule = next(rule for rule in rules if rule["kind"] == "price_change_pct")
-    assert price_rule["threshold"] == 12.0
+    assert price_rule["threshold"] == 0  # sellers hear about every real price move
 
 
 def test_quiet_hours_window() -> None:
@@ -263,6 +263,16 @@ async def test_evaluate_alerts_price_change_threshold() -> None:
                 ),
             ]
         )
+        await session.commit()
+        # Default rule: every recorded move (₹30→₹36 and ₹30→₹31) alerts.
+        alerts = await evaluate_alerts(session, product)
+        price_alerts = [alert for alert in alerts if alert.kind == "price_change_pct"]
+        assert len(price_alerts) == 2
+        assert "Your price rose" in price_alerts[0].message
+        # A seller-set 10% threshold keeps only the 20% move.
+        session.add(AlertRule(product_id=product_id, kind="price_change_pct", threshold=10.0, active=True))
+        await session.commit()
+        await session.execute(delete(Alert).where(Alert.product_id == product_id))
         await session.commit()
         alerts = await evaluate_alerts(session, product)
         price_alerts = [alert for alert in alerts if alert.kind == "price_change_pct"]

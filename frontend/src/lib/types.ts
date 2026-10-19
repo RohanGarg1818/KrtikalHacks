@@ -364,6 +364,7 @@ export type AgentStepKind =
   | "extract"
   | "checkout"
   | "screenshot"
+  | "stream"
   | "done"
   | "error";
 

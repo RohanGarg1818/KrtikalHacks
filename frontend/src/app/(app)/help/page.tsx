@@ -22,7 +22,7 @@ const isSafeActionPath = (path: unknown): path is string =>
 
 const SUGGESTED = [
   "Which pincodes are out of stock right now?",
-  "Am I cheaper than my rivals at checkout?",
+  "Am I cheaper than my rivals?",
   "What should I do first today?",
   "How many checks do I have left?",
 ];

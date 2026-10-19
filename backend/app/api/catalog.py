@@ -215,3 +215,59 @@ async def simulate_telegram_link(
     )
     if link is None:
         raise HTTPException(status_code=422, detail="Link code expired or already used")
+
+
+class ListingResolveRequest(BaseModel):
+    url: WebUrl
+
+
+class ListingResolveResponse(BaseModel):
+    url: str
+    platform: Platform | None
+    name: str | None
+    brand: str | None
+    source: Literal["tinyfish_fetch", "url"]
+
+
+@router.post("/listings/resolve", response_model=ListingResolveResponse)
+async def resolve_listing(
+    payload: ListingResolveRequest, user: User = Depends(get_current_user)
+) -> ListingResolveResponse:
+    """Real product name for a pasted link (TinyFish Fetch for Amazon/Flipkart; free)."""
+    del user
+    from ..services.competitor_discovery import clean_title
+    from ..services.tinyfish.tinyfish_client import url_slug_words
+
+    url = str(payload.url)
+    host = url.split("://")[-1].split("/")[0].lower().removeprefix("www.")
+    platform = next(
+        (name for name, domain in PLATFORM_HOSTS.items() if host == domain or host.endswith("." + domain)),
+        None,
+    )
+    name: str | None = None
+    source: Literal["tinyfish_fetch", "url"] = "url"
+    settings = get_settings()
+    if platform in ("amazon", "flipkart") and settings.tinyfish_enabled:
+        from tinyfish import AsyncTinyFish
+
+        try:
+            async with AsyncTinyFish(api_key=settings.tinyfish_api_key, timeout=60, max_retries=1) as client:
+                fetched = await client.fetch.get_contents(urls=[url], ttl=0)
+            if fetched.results and fetched.results[0].title and "{TITLE}" not in fetched.results[0].title:
+                name, source = clean_title(fetched.results[0].title), "tinyfish_fetch"
+        except Exception:  # noqa: BLE001 - fall back to the link's own words
+            name = None
+    if not name:
+        words = url_slug_words(url).strip()
+        name = " ".join(w if w.isupper() else w.capitalize() for w in words.split())[:120] or None
+    brand = name.split()[0].strip("'’s,") if name else None
+    return ListingResolveResponse(url=url, platform=platform, name=name, brand=brand, source=source)
+
+
+PLATFORM_HOSTS = {
+    "amazon": "amazon.in",
+    "flipkart": "flipkart.com",
+    "zepto": "zepto.com",
+    "instamart": "swiggy.com",
+    "blinkit": "blinkit.com",
+}

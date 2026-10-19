@@ -9,7 +9,7 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: { default: "ShelfSense — See your market the way shoppers do", template: "%s · ShelfSense" },
-  description: "Pincode-level price, stock and true checkout price tracking for quick-commerce and marketplace sellers.",
+  description: "Pincode-level price and stock tracking for quick-commerce and marketplace sellers, powered by TinyFish web agents.",
 };
 
 export const viewport: Viewport = { themeColor: "#f4f1de" };

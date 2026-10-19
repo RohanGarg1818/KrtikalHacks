@@ -4,6 +4,7 @@ import { duration } from "@/lib/format";
 import type { AgentStep } from "@/lib/types";
 
 const KIND_ICON: Record<string, string> = {
+  stream: "▶",
   session: "◎",
   navigate: "↗",
   location: "⌖",
@@ -90,7 +91,7 @@ export default function StepTimeline({
                 {state !== "current" && s.ms > 0 && <span className="text-ink/60 font-normal tabular-nums"> · {duration(s.ms)}</span>}
               </p>
               {s.detail && (
-                <p className={`text-[12px] leading-[18px] text-ink/75 break-words ${s.kind === "session" ? "font-mono" : ""} pl-5`}>{s.detail}</p>
+                <p className={`text-[12px] leading-[18px] text-ink/75 break-words ${s.kind === "session" ? "font-mono" : ""} pl-5`}>{s.kind === "stream" ? "Watch it in the live view above" : s.detail}</p>
               )}
             </div>
           </li>

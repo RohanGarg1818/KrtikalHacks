@@ -21,6 +21,7 @@ AgentStepKind = Literal[
     "extract",
     "checkout",
     "screenshot",
+    "stream",
     "done",
     "error",
 ]

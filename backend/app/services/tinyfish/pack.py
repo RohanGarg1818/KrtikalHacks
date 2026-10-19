@@ -84,8 +84,35 @@ def same_variant(query: str, product_name: str | None) -> bool | None:
         return None
     if same_pack(query, product_name) is False:
         return False
+    # The brand (first word of the query) must be on the listing: "Indie Flavors
+    # Bhujia" must not match "Haldiram's Long Sev".
+    if not has_brand(query, product_name):
+        return False
     # "Pouch for Mi Power Bank 3i" mentions the model but is an accessory.
     accessory = _ACCESSORY_RE.search(product_name)
     if accessory and not re.search(re.escape(accessory.group(1)), query, re.IGNORECASE):
         return False
     return model_numbers(query) <= model_numbers(product_name)
+
+
+# Sub-brands that sell under another name.
+BRAND_ALIASES = {
+    "xiaomi": {"xiaomi", "mi", "redmi"},
+    "samsung": {"samsung", "galaxy"},
+    "oneplus": {"oneplus", "nord"},
+}
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def brand_of(query: str) -> str | None:
+    first = next(iter(_WORD_RE.findall(query.lower())), None)
+    return first if first and len(first) >= 2 and not first.isdigit() else None
+
+
+def has_brand(query: str, product_name: str) -> bool:
+    brand = brand_of(query)
+    if brand is None:
+        return True
+    words = _WORD_RE.findall(product_name.lower())
+    names = BRAND_ALIASES.get(brand, {brand})
+    return any(word == name or word.startswith(name) for word in words for name in names)

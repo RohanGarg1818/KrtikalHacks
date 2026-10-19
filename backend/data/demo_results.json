@@ -1,48 +1,206 @@
 [
   {
-    "platform": "flipkart",
-    "pincode": "110048",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi 20000 mAh 18 W Power Bank",
+    "platform": "instamart",
+    "pincode": "110017",
+    "query": "Amul Taaza Toned Milk 500 ml",
+    "product": "Amul Taaza Toned Milk 500 ml",
     "in_stock": true,
-    "price": 3499.0,
+    "price": 40.0,
     "mrp": null,
+    "eta_minutes": 17,
+    "screenshot": "instamart_110017_21038ae0.jpg",
+    "run_id": "8b611e2b-eebf-4ab1-8bb8-0e1240865e2b",
+    "exact_match": true,
+    "notes": [
+      "Found exact 500 ml pack. Price is \u20b940 (only one price shown, no MRP struck through). Product is in stock (has 'Add item to cart' button). Delivery time: 17 minutes."
+    ],
+    "checked_at": "2026-10-19T17:56:57.692494+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110048",
+    "query": "Indie Flavors by Flipkart Bhujia Sev (200 g)",
+    "product": "Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": false,
+    "notes": [
+      "200 g not listed; closest listed: Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms at \u20b955. Price not reported for a different item."
+    ],
+    "checked_at": "2026-10-19T17:50:08.904564+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110017",
+    "query": "Indie Flavors by Flipkart Bhujia Sev (200 g)",
+    "product": "Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": false,
+    "notes": [
+      "200 g not listed; closest listed: Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms at \u20b955. Price not reported for a different item."
+    ],
+    "checked_at": "2026-10-19T17:50:08.901334+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110016",
+    "query": "Indie Flavors by Flipkart Bhujia Sev (200 g)",
+    "product": "Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": false,
+    "notes": [
+      "200 g not listed; closest listed: Haldiram's Long Sev | Crispy & Crunchy Traditional Sev | Made with All Natural Ingredients | Lightly Spiced & Flavorful | Perfect Topping for All Foods |200 gms at \u20b955. Price not reported for a different item."
+    ],
+    "checked_at": "2026-10-19T17:50:08.895309+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110048",
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Nagpur Bhujia Sev, 200g",
+    "in_stock": true,
+    "price": 55.0,
+    "mrp": 60.0,
     "eta_minutes": null,
     "screenshot": null,
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:03:16.986402+00:00"
+    "checked_at": "2026-10-19T17:49:56.125455+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110017",
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Nagpur Bhujia Sev, 200g",
+    "in_stock": true,
+    "price": 55.0,
+    "mrp": 60.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:49:56.122963+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110016",
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Nagpur Bhujia Sev, 200g",
+    "in_stock": true,
+    "price": 55.0,
+    "mrp": 60.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:49:56.102644+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110048",
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Plain Bhujia Sev (200 g)",
+    "in_stock": false,
+    "price": 53.0,
+    "mrp": 58.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:47:16.385436+00:00"
   },
   {
     "platform": "flipkart",
     "pincode": "110017",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi 20000 mAh 18 W Power Bank",
-    "in_stock": true,
-    "price": 3499.0,
-    "mrp": null,
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Plain Bhujia Sev (200 g)",
+    "in_stock": false,
+    "price": 53.0,
+    "mrp": 58.0,
     "eta_minutes": null,
     "screenshot": null,
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:03:16.983159+00:00"
+    "checked_at": "2026-10-19T17:47:16.382863+00:00"
   },
   {
     "platform": "flipkart",
     "pincode": "110016",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi 20000 mAh 18 W Power Bank",
-    "in_stock": true,
-    "price": 3499.0,
+    "query": "Haldiram Bhujia Sev 200 g",
+    "product": "Haldiram's Plain Bhujia Sev (200 g)",
+    "in_stock": false,
+    "price": 53.0,
+    "mrp": 58.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:47:16.364490+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110048",
+    "query": "Noise Buds N1 Truly Wireless Earbuds with Chrome Finish ...",
+    "product": "Fitpro Buds N1 in-Ear Truly Wireless Earbuds with Chrome Finish, 40H Playtime Bluetooth",
+    "in_stock": false,
+    "price": null,
     "mrp": null,
     "eta_minutes": null,
     "screenshot": null,
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:03:16.974577+00:00"
+    "checked_at": "2026-10-19T17:46:49.100271+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110017",
+    "query": "Noise Buds N1 Truly Wireless Earbuds with Chrome Finish ...",
+    "product": "Fitpro Buds N1 in-Ear Truly Wireless Earbuds with Chrome Finish, 40H Playtime Bluetooth",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:49.097457+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110016",
+    "query": "Noise Buds N1 Truly Wireless Earbuds with Chrome Finish ...",
+    "product": "Fitpro Buds N1 in-Ear Truly Wireless Earbuds with Chrome Finish, 40H Playtime Bluetooth",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:49.081104+00:00"
   },
   {
     "platform": "flipkart",
@@ -57,7 +215,7 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:02:01.674440+00:00"
+    "checked_at": "2026-10-19T17:46:42.208048+00:00"
   },
   {
     "platform": "flipkart",
@@ -72,7 +230,7 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:02:01.671428+00:00"
+    "checked_at": "2026-10-19T17:46:42.204980+00:00"
   },
   {
     "platform": "flipkart",
@@ -87,7 +245,7 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:02:01.665816+00:00"
+    "checked_at": "2026-10-19T17:46:42.188695+00:00"
   },
   {
     "platform": "amazon",
@@ -104,7 +262,7 @@
     "notes": [
       "Listing is currently unavailable on Amazon"
     ],
-    "checked_at": "2026-10-19T17:01:56.960307+00:00"
+    "checked_at": "2026-10-19T17:46:37.230034+00:00"
   },
   {
     "platform": "amazon",
@@ -121,7 +279,7 @@
     "notes": [
       "Listing is currently unavailable on Amazon"
     ],
-    "checked_at": "2026-10-19T17:01:56.957412+00:00"
+    "checked_at": "2026-10-19T17:46:37.227233+00:00"
   },
   {
     "platform": "amazon",
@@ -138,7 +296,97 @@
     "notes": [
       "Listing is currently unavailable on Amazon"
     ],
-    "checked_at": "2026-10-19T17:01:56.940812+00:00"
+    "checked_at": "2026-10-19T17:46:37.210181+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110048",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "Buy ZEBRONICS ASTRA35 16 W Bluetooth Soundbar Online from Flipkart.com",
+    "in_stock": false,
+    "price": 1299.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:20.748844+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110017",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "Buy ZEBRONICS ASTRA35 16 W Bluetooth Soundbar Online from Flipkart.com",
+    "in_stock": false,
+    "price": 1299.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:20.746507+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110016",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "Buy ZEBRONICS ASTRA35 16 W Bluetooth Soundbar Online from Flipkart.com",
+    "in_stock": false,
+    "price": 1299.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:20.729500+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110048",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Price: Buy ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Online in India -Amazon.in",
+    "in_stock": true,
+    "price": 699.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:14.681687+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110017",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Price: Buy ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Online in India -Amazon.in",
+    "in_stock": true,
+    "price": 699.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:14.679048+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110016",
+    "query": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 ...",
+    "product": "ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Price: Buy ZEBRONICS Astra 35, Portable Bluetooth Speaker, 16 Watts, Upto 8h Backup, Dual Drivers + Dual Passive Radiators, Call Function, Bluetooth v5.3 | USB | mSD| AUX, TWS, RGB LED Online in India -Amazon.in",
+    "in_stock": true,
+    "price": 699.0,
+    "mrp": 1899.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:46:14.664265+00:00"
   },
   {
     "platform": "flipkart",
@@ -153,7 +401,7 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:01:42.574579+00:00"
+    "checked_at": "2026-10-19T17:45:52.252297+00:00"
   },
   {
     "platform": "flipkart",
@@ -168,7 +416,7 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:01:42.571974+00:00"
+    "checked_at": "2026-10-19T17:45:52.249627+00:00"
   },
   {
     "platform": "flipkart",
@@ -183,7 +431,193 @@
     "run_id": null,
     "exact_match": true,
     "notes": [],
-    "checked_at": "2026-10-19T17:01:42.556650+00:00"
+    "checked_at": "2026-10-19T17:45:52.235809+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110048",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung 20000 mAh Power Bank",
+    "in_stock": false,
+    "price": 4499.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:43.002487+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110017",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung 20000 mAh Power Bank",
+    "in_stock": false,
+    "price": 4499.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:42.999656+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110016",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung 20000 mAh Power Bank",
+    "in_stock": false,
+    "price": 4499.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:42.981848+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110048",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung Galaxy 20000mAh Power Bank, Wired Battery Pack, Gray",
+    "in_stock": true,
+    "price": 3999.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:36.499304+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110017",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung Galaxy 20000mAh Power Bank, Wired Battery Pack, Gray",
+    "in_stock": true,
+    "price": 3999.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:36.496605+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110016",
+    "query": "Samsung Galaxy 20000mAh Power Bank, Wired Battery ...",
+    "product": "Samsung Galaxy 20000mAh Power Bank, Wired Battery Pack, Gray",
+    "in_stock": true,
+    "price": 3999.0,
+    "mrp": 4999.0,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:36.482423+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110048",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi 20000 mAh 18 W Power Bank",
+    "in_stock": true,
+    "price": 3499.0,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:23.517206+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110017",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi 20000 mAh 18 W Power Bank",
+    "in_stock": true,
+    "price": 3499.0,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:23.515739+00:00"
+  },
+  {
+    "platform": "flipkart",
+    "pincode": "110016",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi 20000 mAh 18 W Power Bank",
+    "in_stock": true,
+    "price": 3499.0,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [],
+    "checked_at": "2026-10-19T17:45:23.508693+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110048",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [
+      "Listing is currently unavailable on Amazon"
+    ],
+    "checked_at": "2026-10-19T17:45:16.466606+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110017",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [
+      "Listing is currently unavailable on Amazon"
+    ],
+    "checked_at": "2026-10-19T17:45:16.464048+00:00"
+  },
+  {
+    "platform": "amazon",
+    "pincode": "110016",
+    "query": "Xiaomi Power Bank 3i 20000mAh",
+    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
+    "in_stock": false,
+    "price": null,
+    "mrp": null,
+    "eta_minutes": null,
+    "screenshot": null,
+    "run_id": null,
+    "exact_match": true,
+    "notes": [
+      "Listing is currently unavailable on Amazon"
+    ],
+    "checked_at": "2026-10-19T17:45:16.448419+00:00"
   },
   {
     "platform": "amazon",
@@ -229,57 +663,6 @@
     "exact_match": true,
     "notes": [],
     "checked_at": "2026-10-19T17:01:37.608282+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110048",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [
-      "Listing is currently unavailable on Amazon"
-    ],
-    "checked_at": "2026-10-19T17:01:19.332671+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110017",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [
-      "Listing is currently unavailable on Amazon"
-    ],
-    "checked_at": "2026-10-19T17:01:19.330464+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110016",
-    "query": "Xiaomi Power Bank 3i 20000mAh",
-    "product": "Mi Power Bank 3i 20000 mAh, 2 USB Ports, Fast Charging, Black",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [
-      "Listing is currently unavailable on Amazon"
-    ],
-    "checked_at": "2026-10-19T17:01:19.315255+00:00"
   },
   {
     "platform": "flipkart",
@@ -376,96 +759,6 @@
       "Listing is currently unavailable on Amazon"
     ],
     "checked_at": "2026-10-19T17:01:00.363312+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110048",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's Delhi Bhujia, 200g",
-    "in_stock": true,
-    "price": 56.0,
-    "mrp": null,
-    "eta_minutes": 46080,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:52:29.114738+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110017",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's Delhi Bhujia, 200g",
-    "in_stock": true,
-    "price": 56.0,
-    "mrp": null,
-    "eta_minutes": 46080,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:52:29.112475+00:00"
-  },
-  {
-    "platform": "amazon",
-    "pincode": "110016",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's Delhi Bhujia, 200g",
-    "in_stock": true,
-    "price": 56.0,
-    "mrp": null,
-    "eta_minutes": 46080,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:52:29.105201+00:00"
-  },
-  {
-    "platform": "flipkart",
-    "pincode": "110048",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's PLAIN BHUJIA 200 GM Bhujia Sev",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:50:41.648679+00:00"
-  },
-  {
-    "platform": "flipkart",
-    "pincode": "110017",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's PLAIN BHUJIA 200 GM Bhujia Sev",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:50:41.645843+00:00"
-  },
-  {
-    "platform": "flipkart",
-    "pincode": "110016",
-    "query": "Haldiram Bhujia Sev 200 g",
-    "product": "Haldiram's PLAIN BHUJIA 200 GM Bhujia Sev",
-    "in_stock": false,
-    "price": null,
-    "mrp": null,
-    "eta_minutes": null,
-    "screenshot": null,
-    "run_id": null,
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-19T16:50:41.640681+00:00"
   },
   {
     "platform": "flipkart",
@@ -655,20 +948,5 @@
       "Exact 500 ml pack size was not available in stock - the 500ml variant showed as Sold Out at \u20b940. The closest available match is the 1 ltr pack of Amul Taaza Toned Milk, priced at \u20b974 (MRP \u20b977, 3% off), in stock with ADD button visible, and delivery in 9 minutes. This is the closest matching product to the requested 500ml pack size that is currently available."
     ],
     "checked_at": "2026-10-18T15:35:32.565319+00:00"
-  },
-  {
-    "platform": "instamart",
-    "pincode": "110017",
-    "query": "Amul Taaza Toned Milk 500 ml",
-    "product": "Amul Taaza Toned Milk 500 ml (live test)",
-    "in_stock": true,
-    "price": 40.0,
-    "mrp": null,
-    "eta_minutes": 15,
-    "screenshot": "instamart_110017_4614353b.jpg",
-    "run_id": "d91652ad-651b-4c5e-871d-6f66f62f65ce",
-    "exact_match": true,
-    "notes": [],
-    "checked_at": "2026-10-18T15:35:08.586582+00:00"
   }
 ]

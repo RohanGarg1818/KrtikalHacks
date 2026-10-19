@@ -100,7 +100,7 @@ function LiveMesh() {
             <span className={`${SERIF} font-bold text-[18px] leading-[28px] tracking-[0.45px] text-linen whitespace-nowrap`}>Delhi NCR Live Mesh</span>
           </div>
           <div className="flex gap-[6px]">
-            {["Blinkit", "Zepto", "Instamart"].map((p) => (
+            {["Zepto", "Instamart", "Amazon", "Flipkart"].map((p) => (
               <span key={p} className="bg-slate border border-linen/30 rounded-[6px] px-[11px] py-[5px] text-[11px] leading-[16.5px] font-bold text-linen">{p}</span>
             ))}
           </div>
@@ -163,7 +163,7 @@ function Hero() {
             </a>
           </div>
           <div className="mt-12 flex flex-wrap gap-3">
-            {["15-min sync", "Blinkit, Zepto, Instamart", "Amazon & Flipkart"].map((c) => (
+            {["TinyFish web agents", "Zepto & Instamart", "Amazon & Flipkart"].map((c) => (
               <span key={c} className="flex items-center gap-2 bg-linen border-2 border-ink rounded-[12px] shadow-[3px_3px_0_var(--ink)] px-4 py-[10px] text-[12px] leading-4 font-bold">
                 <span className="grid place-items-center size-5 rounded-[6px] bg-sage"><Icon name="heroCheck" w={10.19} h={7.52} /></span>
                 {c}
@@ -198,7 +198,7 @@ function Marquee() {
 /* --------------------------------------------------------------- 4 PROBLEM */
 
 const REASONS = [
-  { t: "Prices change hourly", d: "Blinkit, Zepto, and Instamart adjust surge discounts per micro-zone faster than any spreadsheet can keep up with.", bg: "bg-slate", fg: "text-linen", sub: "text-linen/90", box: "bg-sand", icon: ["probClock", 27.13, 27.13] },
+  { t: "Prices change hourly", d: "Zepto and Instamart adjust surge discounts per micro-zone faster than any spreadsheet can keep up with.", bg: "bg-slate", fg: "text-linen", sub: "text-linen/90", box: "bg-sand", icon: ["probClock", 27.13, 27.13] },
   { t: "Every dark store has its own stock", d: "City-level visibility is a myth. When a dark store runs dry, your product silently vanishes from search results.", bg: "bg-sage", fg: "text-ink", sub: "text-ink/90", box: "bg-linen", icon: ["probStore", 27.17, 25] },
   { t: "Existing tools show data, not decisions", d: "You don't need 20 charts of raw CSVs. You need a direct nudge on Telegram saying \"re-allocate 15 units now.\"", bg: "bg-deep", fg: "text-linen", sub: "text-linen/90", box: "bg-slate", icon: ["probBolt", 23.84, 27.38] },
 ] as const;
@@ -216,7 +216,7 @@ function Problem() {
             <span className={`block ${SERIF} italic font-normal`}>Not here.</span>
           </h2>
           <p className="pt-1 text-[17px] leading-[28px] sm:text-[19px] sm:leading-[30.88px] font-medium max-w-[544px]">
-            When you check your Amazon or Blinkit listing from your corporate office, it looks available. But a consumer living 4 kilometers east opens their phone to find your shelf empty, instantly handing market share to your rival.
+            When you check your Amazon or Zepto listing from your corporate office, it looks available. But a consumer living 4 kilometers east opens their phone to find your shelf empty, instantly handing market share to your rival.
           </p>
           <div className={`w-full bg-deep border-2 border-ink rounded-[20px] shadow-[6px_6px_0_var(--ink)] px-6 sm:px-[34px] pt-[46.7px] pb-[34px] flex flex-col gap-4 ${LIFT} hover:shadow-[8px_10px_0_var(--ink)]`}>
             <p className={`${SERIF} font-bold text-sand text-[80px] leading-[80px] sm:text-[110px] sm:leading-[110px]`}>34.2%</p>
@@ -278,25 +278,24 @@ function HowItWorks() {
 
 /* ----------------------------------------------------- 5b TINYFISH AGENT */
 
-// Illustrative run (marketing copy, like the other widgets on this page) mirroring the
-// real agent step sequence the product's Agent console shows.
+// Mirrors a real TinyFish check (Instamart, 110017, 19 Oct 2026) as the Agents page shows it.
 const AGENT_STEPS = [
-  { k: "session", t: "Starting browser session", d: "tf_sess_7c1e9a42" },
-  { k: "navigate", t: "Opening blinkit.com", d: null },
-  { k: "location", t: "Setting delivery pincode 110017", d: "Malviya Nagar, South Delhi" },
-  { k: "search", t: "Searching “Amul Taaza 500 ml”", d: null },
-  { k: "open", t: "Opening best match", d: "Amul Taaza Toned Fresh Milk · 500 ml" },
-  { k: "extract", t: "Reading price, stock and delivery time", d: "₹29 · MRP ₹30 · In stock · 11 min" },
-  { k: "checkout", t: "Computing true price at checkout", d: "Item ₹29 + handling ₹4 + delivery ₹0 = ₹33" },
-  { k: "screenshot", t: "Capturing evidence screenshot", d: "Saved to the pin on your heatmap" },
-  { k: "done", t: "Check complete", d: "3.2 s · no order placed" },
+  { k: "session", t: "Starting stealth agent session", d: "TinyFish Agent API" },
+  { k: "navigate", t: "Opening swiggy.com/instamart", d: null },
+  { k: "location", t: "Setting delivery pincode 110017", d: "Saket, South Delhi" },
+  { k: "search", t: "Searching “Amul Taaza Toned Milk 500 ml”", d: null },
+  { k: "open", t: "Finding the product card", d: "Amul Taaza Toned Milk · 500 ml" },
+  { k: "extract", t: "Checking it is the exact pack", d: "500 ml ✓, not the 200 ml or 1 L" },
+  { k: "stream", t: "Reading price, stock and delivery time", d: "₹40 · In stock · 17 min" },
+  { k: "screenshot", t: "Saving evidence screenshot", d: "Shown on the heatmap pin and in Telegram" },
+  { k: "done", t: "Check complete", d: "Read-only: no cart, no checkout, no login" },
 ] as const;
 
 const AGENT_POINTS = [
-  ["Opens the real app", "A headless browser visits Blinkit, Zepto or Instamart like a shopper would."],
+  ["Opens the real app", "A TinyFish web agent visits Zepto or Instamart like a shopper would; Amazon and Flipkart pages are read directly."],
   ["Sets your pincode", "Every dark store has its own shelf, so each check is pinned to one delivery area."],
   ["Reads price and stock", "Listed price, MRP, availability and delivery time, straight from the page."],
-  ["Finds the true price", "Walks to checkout to add handling and delivery fees. It never places an order."],
+  ["Checks it's the exact item", "Only your exact pack or model counts: a 1 L price never stands in for your 500 ml."],
   ["Keeps a screenshot", "Every result comes with evidence you can open from the heatmap."],
 ] as const;
 
@@ -350,7 +349,7 @@ function AgentConsoleMock() {
         {/* address bar */}
         <div className="flex items-center gap-2 border-b-2 border-ink px-4 sm:px-6 py-3">
           <span className="flex-1 min-w-0 truncate bg-sand/40 border-2 border-ink rounded-[10px] px-3 py-[6px] text-[12px] leading-4 font-bold">
-            blinkit.com/prn/amul-taaza-toned-fresh-milk
+            swiggy.com/instamart · Amul Taaza Toned Milk 500 ml
           </span>
           <span className="shrink-0 bg-slate text-linen border-2 border-ink rounded-[10px] px-[10px] py-[6px] text-[12px] leading-4 font-extrabold">110017</span>
         </div>
@@ -394,12 +393,12 @@ function AgentConsoleMock() {
           </div>
         </div>
         <div className="min-w-0">
-          <p className="text-[11px] leading-[16.5px] font-extrabold tracking-[0.55px] uppercase">True price · 110017</p>
+          <p className="text-[11px] leading-[16.5px] font-extrabold tracking-[0.55px] uppercase">Instamart · 110017</p>
           <p className="flex items-baseline gap-2">
-            <span className="text-[14px] font-bold line-through decoration-2">₹29</span>
-            <span className={`${SERIF} font-bold text-[34px] leading-[38px]`}>₹33</span>
+            <span className={`${SERIF} font-bold text-[34px] leading-[38px]`}>₹40</span>
+            <span className="text-[14px] font-bold">500 ml</span>
           </p>
-          <p className="text-[12px] leading-4 font-bold">+₹4 handling at checkout · screenshot saved</p>
+          <p className="text-[12px] leading-4 font-bold">In stock · 17 min · screenshot saved</p>
         </div>
       </div>
     </div>
@@ -633,7 +632,7 @@ function Features() {
             <div className="flex flex-col gap-2 pb-6">
               <p className={`${TILE_EYEBROW} text-sand`}>Hyperlocal map</p>
               <h3 className={`${TILE_TITLE} text-linen`}>Pincode heatmap</h3>
-              <p className="pt-1 text-[16px] leading-[26px] font-medium text-linen/90">Real-time shelf availability by postal code across Blinkit, Zepto, and Instamart.</p>
+              <p className="pt-1 text-[16px] leading-[26px] font-medium text-linen/90">Shelf availability by pincode across Zepto, Instamart, Amazon and Flipkart.</p>
             </div>
             <div className="bg-deep border-2 border-ink rounded-[20px] p-3 sm:p-[18px] flex flex-col gap-3">
               {MESH_ROWS.map((r) => (
@@ -672,8 +671,8 @@ function Features() {
           </div>
           <div className={`${TILE} bg-sage border-ink px-[26px] pt-[26px] pb-[34.5px] lg:col-span-3 flex flex-col gap-2`}>
             <span className="grid place-items-center size-12 rounded-[12px] bg-linen border-2 border-ink shadow-[3px_3px_0_var(--ink)]"><Icon name="featReceipt" w={20.05} h={22.1} /></span>
-            <h4 className={`${SERIF} font-bold pt-2 text-[20px] leading-[28px]`}>True-price checks</h4>
-            <p className="text-[12px] leading-[19.5px] font-bold text-ink/90">Uncovers hidden cart fees, surge costs, and actual checkout surcharges across platforms.</p>
+            <h4 className={`${SERIF} font-bold pt-2 text-[20px] leading-[28px]`}>Exact-match checks</h4>
+            <p className="text-[12px] leading-[19.5px] font-bold text-ink/90">Only your exact pack or model counts, so a different size or a lookalike never sets your price.</p>
           </div>
           <div className={`${TILE} bg-deep border-linen p-[26px] lg:col-span-3 flex flex-col gap-2`}>
             <span className="grid place-items-center size-12 rounded-[12px] bg-slate border border-linen/30"><Icon name="featSend" w={20.78} h={17.6} /></span>

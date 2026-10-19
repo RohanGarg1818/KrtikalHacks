@@ -180,6 +180,11 @@ async def create_run(
     if settings.tinyfish_enabled:
         # Apps that block automation are not checked live (TINYFISH_LIVE_PLATFORMS).
         jobs = [job for job in jobs if job.platform in settings.live_platforms]
+        if trigger == "scheduled" and not settings.tinyfish_schedule_agent_checks:
+            # Automatic checks stay free: only Fetch apps (Amazon, Flipkart).
+            from .tinyfish.tinyfish_client import CHECK_STRATEGY
+
+            jobs = [job for job in jobs if CHECK_STRATEGY.get(job.platform) != "agent"]
         if not jobs:
             raise HTTPException(
                 status_code=422,

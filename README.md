@@ -2,7 +2,7 @@
 
 **See your market the way shoppers do.**
 
-ShelfSense is an AI assistant that shows online sellers where they're losing sales and tells them how to win them back without starting a price war. It tracks a seller's products and competitors on quick-commerce apps (Blinkit, Zepto, Instamart) and marketplaces (Amazon, Flipkart), checks price and stock **pincode by pincode**, works out the **true price** shoppers pay, shows everything on a **heatmap**, explains it in plain English, and lets the seller approve actions with **one tap on Telegram**.
+ShelfSense is an AI assistant that shows online sellers where they're losing sales and tells them how to win them back without starting a price war. It tracks a seller's products and competitors on quick-commerce apps (Zepto, Instamart) and marketplaces (Amazon, Flipkart) with **TinyFish web agents**, checks price and stock **pincode by pincode** for the **exact pack or model**, shows everything on a **heatmap**, explains it in plain English, and lets the seller approve actions with **one tap on Telegram**.
 
 > Built by **Team CodeCrunchers** (USICT, GGSIPU) for **HackIIITD**.
 
@@ -13,6 +13,8 @@ ShelfSense is an AI assistant that shows online sellers where they're losing sal
 - [The problem](#the-problem)
 - [How it works](#how-it-works)
 - [How we use TinyFish](#how-we-use-tinyfish)
+- [Screenshots](#screenshots)
+- [System diagram](#system-diagram)
 - [Features](#features)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
@@ -44,7 +46,7 @@ ShelfSense is an AI assistant that shows online sellers where they're losing sal
 2. **Find competitors:** ShelfSense suggests similar products; the seller confirms them.
 3. **Agents check every pincode:** TinyFish web agents open each app, set the pincode, and read price, stock and delivery time, saving a screenshot as proof.
 4. **The heatmap lights up:** each pincode becomes a pin: in stock, out of stock, or price gap.
-5. **The AI explains:** for example, *"You're out of stock in 4 South Delhi pincodes. At checkout you're ₹2 cheaper than the rival, so don't cut price. Restock."*
+5. **The AI explains:** for example, *"You're out of stock in 3 South Delhi pincodes on Instamart. You're already ₹2 cheaper than the rival, so don't cut price. Restock."*
 6. **Approve on Telegram:** recommendations arrive with an **Approve** button. Nothing changes without the seller's approval.
 
 ---
@@ -87,14 +89,44 @@ python -m scripts.check_pincode --app zepto --pincode 110017 --product "Amul Taa
 
 ---
 
+## Screenshots
+
+| Live TinyFish agent (Agents page) | Every check, with proof |
+|---|---|
+| ![Live agent browser](docs/screenshots/live-agent.png) | ![Check details](docs/screenshots/check-details.png) |
+| **Pincode heatmap with rival price gap** | **Dashboard** |
+| ![Heatmap](docs/screenshots/heatmap.png) | ![Dashboard](docs/screenshots/dashboard.png) |
+
+## System diagram
+
+```mermaid
+flowchart LR
+    Seller([Seller]) --> Web[Next.js website]
+    Seller --> TG[Telegram bot]
+    Web --> API[FastAPI backend]
+    TG --> API
+    API --> Runner[Check runner<br/>parallel jobs, retries, cost cap]
+    Runner -->|Agent API, stealth| QC[Zepto / Instamart<br/>pincode set by the agent]
+    Runner -->|Search + Fetch API| MP[Amazon / Flipkart<br/>page read directly]
+    Runner --> Match[Exact pack and model check]
+    Match --> DB[(PostgreSQL / Supabase)]
+    API --> AI[Gemini summaries and chat<br/>rule-based fallback]
+    DB --> Heat[Heatmap, alerts, recommendations]
+    Heat --> TG
+    Runner -. live browser stream .-> Web
+```
+
+---
+
 ## Features
 
 ### Monitoring
-- **Pincode Mapper:** price, stock and delivery time across many pincodes and platforms in parallel.
-- **Competitor tracking**, plus **automatic competitor discovery**.
-- **True-price check:** final price after fees and offers (never places an order).
-- **Evidence screenshots** for every check.
-- **Scheduled checks** (every 3 h to weekly); products whose prices change often are checked more often.
+- **Pincode Mapper:** price, stock and delivery time across pincodes and apps in parallel.
+- **Live agent view:** watch the TinyFish agent's real browser on the Agents page while it checks.
+- **Exact-match checks:** a price counts only for the exact pack (500 ml, not 1 L) and model (Go 3, not Go 4); otherwise the app is marked *not listed*.
+- **Competitor tracking**, with **real competitor discovery** from TinyFish Search (other brands, same category and pack).
+- **Evidence screenshots** and the agent's step-by-step trace for every check.
+- **Automatic checks:** Amazon and Flipkart on a schedule for free; Zepto and Instamart when you start them (or on a schedule if you allow paid checks).
 
 ### Understanding
 - **Pincode heatmap:** in stock, out of stock, price gap (≥5% above rival), stale; clusters of stock-outs shown as hot zones.
@@ -387,7 +419,7 @@ Backend tests cover: health, product CRUD, plan limits, the full check pipeline 
 
 | Working in the MVP | Prototype or mocked |
 |---|---|
-| Pincode checks via TinyFish, heatmap, screenshots | True checkout price (only on sites that show it without login) |
+| Live TinyFish checks (Zepto, Instamart, Amazon, Flipkart), live agent view, heatmap, screenshots | Blinkit (blocks automated browsers) |
 | AI summary, recommendations, Help Centre chat | Applying price changes in seller dashboards |
 | Telegram linking, alerts, one-tap Approve | Payments and plan changes (test mode) |
 | Product and user settings, plan limits | Large-scale coverage (50+ pincodes live) |
@@ -395,7 +427,8 @@ Backend tests cover: health, product CRUD, plan limits, the full check pipeline 
 **Known limits**
 - **TinyFish free credits** allow only a limited number of checks. The demo uses about 10–15 pincodes, with results pre-run and cached.
 - **Quick-commerce websites may block automation** or handle location differently on the web than in the app.
-- **Checkout on quick-commerce apps usually needs a phone login,** so the true-price feature is partly a prototype.
+- **Amazon and Flipkart results are listing-wide:** the Fetch API reads the page without entering a pincode.
+- **Agents never open the cart or checkout,** so fees added at checkout are not tracked.
 - **Gemini free-tier rate limits apply;** the rule-based fallback covers outages.
 
 ---

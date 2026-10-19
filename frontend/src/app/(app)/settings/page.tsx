@@ -24,7 +24,7 @@ const SECTIONS = [
 
 const PLAN_COPY: Record<string, { price: string; blurb: string }> = {
   free: { price: "₹0", blurb: "Weekly refresh, Telegram alerts" },
-  pro: { price: "₹999/mo", blurb: "Faster refresh, true-price checks, Telegram autopilot" },
+  pro: { price: "₹999/mo", blurb: "Faster refresh, live agent checks, Telegram alerts" },
   brand: { price: "Custom", blurb: "City-wide coverage, distributor reports, priority refresh" },
 };
 

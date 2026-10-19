@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # earlier live runs) instead of calling TinyFish. Failed live checks always
     # fall back to that cache when it has the same app + pincode.
     tinyfish_demo: bool = False
+    # false = scheduled (automatic) runs check only free Fetch apps (Amazon,
+    # Flipkart); Zepto/Instamart agent checks run only when someone starts them.
+    tinyfish_schedule_agent_checks: bool = False
 
     @property
     def live_platforms(self) -> set[str]:

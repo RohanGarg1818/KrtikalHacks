@@ -306,3 +306,54 @@ def test_flipkart_gadget_price_after_selected_variant_and_model_from_url() -> No
     slug = url_slug_words("https://www.flipkart.com/mi-3i-20000-mah-power-bank-fast-charging-18w/p/itmd42cbbe08e65e")
     assert same_variant("Xiaomi Power Bank 3i 20000mAh", f"Mi 20000 mAh 18 W Power Bank {slug}") is True
     assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Mi 20000 mAh 18 W Power Bank") is False
+
+
+@pytest.mark.asyncio
+async def test_scheduled_live_runs_only_use_free_apps(monkeypatch) -> None:
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from app.config import get_settings
+    from app.db import SessionLocal
+    from app.models.product import Product
+    from app.services.runner import create_run
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tinyfish_api_key", "test-key")
+    monkeypatch.setattr(settings, "mock_mode", False)
+    async with SessionLocal() as session:
+        product = (await session.scalars(select(Product).where(Product.paused.is_(False)))).first()
+        with pytest.raises(HTTPException):  # zepto only: nothing free to run on a schedule
+            await create_run(session, product, trigger="scheduled", platforms=["zepto"], pincodes=["110017"])
+        run, jobs = await create_run(
+            session, product, trigger="scheduled", platforms=["zepto", "amazon"], pincodes=["110017"]
+        )
+        assert {job.platform for job in jobs} == {"amazon"}
+        run.status = "done"
+        await session.commit()
+
+
+def test_rival_search_uses_the_category_not_the_brand_or_model() -> None:
+    from app.services.competitor_discovery import (
+        _NOT_A_RIVAL_RE,
+        clean_title,
+        rival_query,
+    )
+
+    assert rival_query("Amul Taaza Toned Milk 500 ml (live test)", "Amul") == "Taaza Toned Milk 500 ml"
+    assert rival_query("JBL Go 3 Bluetooth Speaker", "JBL") == "Bluetooth Speaker"
+    assert rival_query("Xiaomi Power Bank 3i 20000mAh", "Xiaomi") == "Power Bank 20000mAh"
+    assert rival_query("boAt Airdopes 141 Wireless Earbuds", "boAt") == "Wireless Earbuds"
+    assert clean_title("Haldiram's Delhi Bhujia, 200g : Amazon.in: Grocery") == "Haldiram's Delhi Bhujia, 200g"
+    assert _NOT_A_RIVAL_RE.search("Teyomi TPU Case for AirPods Pro 2nd Generation")
+    assert _NOT_A_RIVAL_RE.search("Orvik AirPods Pro (Gen 2) Replica")
+
+
+def test_listing_must_carry_the_products_brand() -> None:
+    from app.services.tinyfish.pack import same_variant
+
+    assert same_variant("Indie Flavors by Flipkart Bhujia Sev (200 g)", "Haldiram's Long Sev 200 gms") is False
+    assert same_variant("Haldiram Bhujia Sev 200 g", "Haldiram's Delhi Bhujia, 200g") is True
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Mi 3i 20000 mAh Power Bank") is True
+    assert same_variant("Samsung 20000 mAh 45 W Power Bank", "Samsung Galaxy 20000mAh 45W Power Bank") is True
+    assert same_variant("Samsung 20000 mAh 45 W Power Bank", "Samsung Galaxy 20000mAh Power Bank") is False  # 45 W missing

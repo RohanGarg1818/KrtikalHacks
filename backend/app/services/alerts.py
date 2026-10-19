@@ -36,7 +36,7 @@ from ..db import SessionLocal
 from ..models.base import utcnow
 from ..models.checks import ChangeEvent, CheckResult
 from ..models.intelligence import Alert, AlertRule
-from ..models.product import Pincode, Product
+from ..models.product import Competitor, Pincode, Product
 from ..models.telegram import TelegramLink
 from ..models.user import User, UserSettings
 from ..utils.geo import in_city_zone
@@ -45,6 +45,8 @@ from .heatmap import selected_pairs
 from .insights import _latest_rival_rows, _latest_seller_rows
 
 logger = logging.getLogger("shelfsense.alerts")
+# Longest Telegram digest; the rest is summarised as "…and N more".
+MAX_DIGEST_LINES = 12
 
 ALERT_KINDS = (
     "oos_any",
@@ -68,8 +70,8 @@ def default_alert_rules(product: Product) -> list[dict]:
         {"kind": "oos_any", "threshold": None, "rule_text": "Any pin is out of stock"},
         {
             "kind": "price_change_pct",
-            "threshold": product.max_change_pct,
-            "rule_text": f"Price moved by more than {product.max_change_pct}%",
+            "threshold": 0,
+            "rule_text": "Any price change (yours or a rival's)",
         },
         {
             "kind": "rating_below",
@@ -223,6 +225,12 @@ async def _price_change_candidates(
             .order_by(ChangeEvent.detected_at.desc())
         )
     ).all()
+    rivals = {
+        row.id: row.name
+        for row in (
+            await session.scalars(select(Competitor).where(Competitor.product_id == product.id))
+        ).all()
+    }
     candidates: list[dict] = []
     for event in events:
         if event.old_value in (None, 0) or event.new_value is None:
@@ -230,13 +238,20 @@ async def _price_change_candidates(
         pct = abs(event.new_value - event.old_value) / event.old_value * 100
         if pct < threshold:
             continue
-        direction = "up" if event.new_value > event.old_value else "down"
+        down = event.new_value < event.old_value
+        arrow = "📉" if down else "📈"
+        where = f"{event.platform.title()} · {ev.area(event.pincode)} ({event.pincode})"
+        change = f"₹{event.old_value:,.2f} → ₹{event.new_value:,.2f} ({'-' if down else '+'}{pct:.1f}%)"
+        if event.competitor_id:
+            who = rivals.get(event.competitor_id, "A rival")
+            hint = " Check your price gap." if down else " You may now be cheaper."
+            message = f"{arrow} Rival {who} {'cut' if down else 'raised'} its price on {where}: {change}.{hint}"
+        else:
+            message = f"{arrow} Your price {'dropped' if down else 'rose'} on {where}: {change}."
         candidates.append(
             _candidate(
                 "price_change_pct",
-                f"{product.name} price is {direction} {pct:.1f}% on "
-                f"{event.platform}/{event.pincode} "
-                f"(₹{event.old_value:.2f} → ₹{event.new_value:.2f}).",
+                message,
                 {
                     "platform": event.platform,
                     "pincode": event.pincode,
@@ -520,8 +535,8 @@ async def deliver_alerts(
             )
         ).all()
     }
+    outbox: dict[tuple[str, str], list[Alert]] = {}
     for alert in alerts:
-        photo = await alert_photo(session, alert)
         for link in links_by_product.get(alert.product_id, []):
             if link.alert_types and alert.kind not in link.alert_types:
                 continue
@@ -539,10 +554,28 @@ async def deliver_alerts(
                 local_now = datetime.now(UTC)
             if _within_quiet_hours(user_settings, local_now):
                 continue
-            sent = await send_alert(link.chat_id, f"[ShelfSense] {alert.message}", photo)
-            if sent:
+            outbox.setdefault((link.chat_id, alert.product_id), []).append(alert)
+    products = {
+        row.id: row.name
+        for row in (
+            await session.scalars(select(Product).where(Product.id.in_(product_ids)))
+        ).all()
+    }
+    for (chat_id, product_id), batch in outbox.items():
+        if len(batch) == 1:
+            text = f"[ShelfSense] {batch[0].message}"
+            photo = await alert_photo(session, batch[0])
+        else:
+            # A digest instead of one message per pincode and app.
+            lines = [f"• {alert.message}" for alert in batch[:MAX_DIGEST_LINES]]
+            if len(batch) > MAX_DIGEST_LINES:
+                lines.append(f"…and {len(batch) - MAX_DIGEST_LINES} more on the website.")
+            text = f"[ShelfSense] {len(batch)} updates for {products.get(product_id, 'your product')}:\n" + "\n".join(lines)
+            photo = None
+        if await send_alert(chat_id, text, photo):
+            for alert in batch:
                 alert.sent_telegram = True
-                delivered += 1
+            delivered += len(batch)
     await session.commit()
     return delivered
 
