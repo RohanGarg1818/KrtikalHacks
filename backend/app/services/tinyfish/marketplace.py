@@ -41,12 +41,15 @@ _AMAZON_OFFER_RE = re.compile(
     re.DOTALL,
 )
 _AMAZON_PRICE_LINE_RE = re.compile(rf"^\s*{_AMOUNT}\s*$", re.MULTILINE)
+_AMAZON_DEAL_RE = re.compile(rf"{_AMOUNT}\s+with\s+\d+\s+percent\s+savings", re.IGNORECASE)
+_ADD_ON_RE = re.compile(r"warranty|protection|plan\b|assist|applecare|insurance", re.IGNORECASE)
 _AMAZON_MRP_RE = re.compile(rf"M\.R\.P\.?:?\s*{_AMOUNT}")
 _AMAZON_DELIVERY_RE = re.compile(
     rf"(?:(FREE)|{_AMOUNT})\s+delivery\s+(?:[A-Z][a-z]+day,?\s+)?(\d{{1,2}})\s+([A-Z][a-z]+)"
 )
 _FLIPKART_HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 _FLIPKART_PRICE_LINE_RE = re.compile(rf"^\s*{_AMOUNT}\s*$", re.MULTILINE)
+_FLIPKART_SELECTED_RE = re.compile(r"Selected (?:Color|Colour|Quantity|Size|Variant|Capacity|Storage)\b", re.IGNORECASE)
 _FLIPKART_CTA_RE = re.compile(r"\b(Add to cart|Buy Now|Notify Me|Sold Out)\b", re.IGNORECASE)
 _MONTHS = {
     name: index
@@ -97,6 +100,20 @@ def _delivery_date(day: str, month: str) -> date | None:
     return candidate
 
 
+def _first_amazon_price_line(text: str) -> float | None:
+    """First standalone price that isn't an add-on (warranty, protection plan)."""
+    previous = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _AMAZON_PRICE_LINE_RE.fullmatch(stripped) if stripped.startswith("₹") else None
+        if match and not _ADD_ON_RE.search(previous):
+            return _amount(match.group(1))
+        previous = stripped
+    return None
+
+
 def parse_amazon(text: str, title: str | None) -> ListingSnapshot:
     snapshot = ListingSnapshot(name=(title or "").split(" : ")[0].strip() or None)
     lowered = text.lower()
@@ -104,7 +121,13 @@ def parse_amazon(text: str, title: str | None) -> ListingSnapshot:
         snapshot.in_stock = False
     elif "in stock" in lowered:
         snapshot.in_stock = True
-    offer = _AMAZON_OFFER_RE.search(text)
+    deal = _AMAZON_DEAL_RE.search(text)
+    offer = None if deal else _AMAZON_OFFER_RE.search(text)
+    if deal:
+        # Gadget pages: "₹2,849.05 with 29 percent savings" is the buy-box price.
+        snapshot.price = _amount(deal.group(1))
+        if snapshot.in_stock is None:
+            snapshot.in_stock = True
     if offer:
         # Amazon only shows a buy-box offer with a delivery date when it can be bought.
         if snapshot.in_stock is None:
@@ -112,15 +135,15 @@ def parse_amazon(text: str, title: str | None) -> ListingSnapshot:
         snapshot.price = _amount(offer.group(1))
         snapshot.delivery_fee = 0.0 if offer.group(2) else _amount(offer.group(3))
         snapshot.delivery_date = _delivery_date(offer.group(4), offer.group(5))
-    else:
-        line = _AMAZON_PRICE_LINE_RE.search(text)
-        snapshot.price = _amount(line.group(1)) if line else None
+    elif not deal:
+        snapshot.price = _first_amazon_price_line(text)
+    if not offer:
         delivery = _AMAZON_DELIVERY_RE.search(text)
         if delivery:
             snapshot.delivery_fee = 0.0 if delivery.group(1) else _amount(delivery.group(2))
             snapshot.delivery_date = _delivery_date(delivery.group(3), delivery.group(4))
     # Only the buy box's MRP counts; lower down the page lists other products.
-    anchor = offer or _AMAZON_PRICE_LINE_RE.search(text)
+    anchor = deal or offer or _AMAZON_PRICE_LINE_RE.search(text)
     buy_box = text[: anchor.end() + BUY_BOX_CHARS] if anchor else text[:BUY_BOX_CHARS]
     mrp = _AMAZON_MRP_RE.search(buy_box)
     if mrp and snapshot.price is not None:
@@ -142,11 +165,15 @@ def parse_flipkart(text: str, title: str | None) -> ListingSnapshot:
         name = title.split(" Price in India")[0].strip()
     snapshot = ListingSnapshot(name=name)
     after = text[heading.end():] if heading else text
-    amounts = [_amount(match) for match in _FLIPKART_PRICE_LINE_RE.findall(after[:600])]
+    amounts = [_amount(match) for match in _FLIPKART_PRICE_LINE_RE.findall(after[:600])] if heading else []
     if amounts:
         snapshot.price = amounts[0]
         if len(amounts) > 1 and amounts[1] > amounts[0]:
             snapshot.mrp = amounts[1]
+    else:
+        block = _flipkart_price_block(text)
+        if block:
+            snapshot.price, snapshot.mrp = block
     # The page's main call to action is the last one (Flipkart's sticky bar).
     actions = _FLIPKART_CTA_RE.findall(text)
     if actions:
@@ -154,6 +181,40 @@ def parse_flipkart(text: str, title: str | None) -> ListingSnapshot:
     if "not deliverable in your location" in text.lower():
         snapshot.notes.append("Flipkart reports this item is not deliverable to TinyFish's location")
     return snapshot
+
+
+def _flipkart_price_block(text: str) -> tuple[float, float | None] | None:
+    """Gadget layout: "25%" / "3,999" (MRP) / "₹2,999" (price), skipping sponsored ads.
+
+    Sponsored products use the same three lines but are followed by "AD".
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # The product's own price follows "Selected Color/Quantity/Size"; sponsored
+    # products above it end with an "AD" line.
+    anchor = next((i for i, line in enumerate(lines) if _FLIPKART_SELECTED_RE.match(line)), None)
+    if anchor is not None:
+        for i in range(anchor + 1, min(anchor + 25, len(lines))):
+            line = lines[i]
+            if not line.startswith("₹") or not re.fullmatch(rf"{_AMOUNT}", line):
+                continue
+            if i + 1 < len(lines) and lines[i + 1] == "AD":
+                continue
+            price = _amount(line.lstrip("₹").strip())
+            mrp = _amount(lines[i - 1]) if re.fullmatch(r"[\d,]+", lines[i - 1]) else None
+            return price, mrp if mrp and price and mrp > price else None
+    for i in range(len(lines) - 2):
+        if not re.fullmatch(r"\d{1,2}%", lines[i]):
+            continue
+        mrp_line, price_line = lines[i + 1], lines[i + 2]
+        if not re.fullmatch(r"[\d,]+", mrp_line) or not price_line.startswith("₹"):
+            continue
+        if i + 3 < len(lines) and lines[i + 3] == "AD":
+            continue
+        price = _amount(price_line.lstrip("₹").strip())
+        mrp = _amount(mrp_line)
+        return price, mrp if mrp and price and mrp > price else None
+    buy_at = re.search(rf"Buy at {_AMOUNT}", text)
+    return (_amount(buy_at.group(1)), None) if buy_at else None
 
 
 PARSERS = {"amazon": parse_amazon, "flipkart": parse_flipkart}

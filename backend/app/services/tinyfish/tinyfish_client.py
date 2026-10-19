@@ -78,7 +78,7 @@ from .marketplace import (
     fetched_pages,
     listing_urls,
 )
-from .pack import pack_label, same_pack
+from .pack import pack_label, same_variant
 
 if TYPE_CHECKING:
     from playwright.async_api import Locator, Page
@@ -347,12 +347,21 @@ def build_agent_goal(platform: str, pincode: str, query: str, url: str | None) -
     )
 
 
+def url_slug_words(url: str | None) -> str:
+    """Words from a product URL's slug: ".../mi-3i-20000-mah-power-bank/p/itm..." -> "mi 3i 20000 mah power bank"."""
+    if not url:
+        return ""
+    path = url.split("?")[0].split("://")[-1].split("/", 1)[-1]
+    slug = path.split("/p/")[0].split("/dp/")[0].rsplit("/", 1)[-1]
+    return slug.replace("-", " ")
+
+
 def not_listed_note(query: str, matched: str | None, price: float | None) -> str:
-    wanted = pack_label(query) or "The exact pack"
+    wanted = pack_label(query) or "This exact model"
     closest = f"; closest listed: {matched}" if matched else ""
     if matched and price is not None:
         closest += f" at {format_rupees(price)}"
-    return f"{wanted} not listed{closest}. Price not reported for a different pack."
+    return f"{wanted} not listed{closest}. Price not reported for a different item."
 
 
 def _step_kind(purpose: str) -> AgentStepKind:
@@ -763,7 +772,7 @@ class TinyFishLiveClient:
                 agent=trace.as_raw(),
             )
 
-        exact = output.exact_match is not False and same_pack(query, output.product_name) is not False
+        exact = output.exact_match is not False and same_variant(query, output.product_name) is not False
         notes = [output.notes] if output.notes else []
         if exact:
             parsed = ParsedCard(
@@ -856,7 +865,9 @@ class TinyFishLiveClient:
                 retryable=False,
                 agent=trace.as_raw(),
             )
-        exact = same_pack(query, snapshot.name) is not False
+        # The product link often carries the model ("mi-3i-20000-mah-...") when the
+        # page's display name drops it.
+        exact = same_variant(query, f"{snapshot.name or ''} {url_slug_words(url)}".strip() or None) is not False
         if exact:
             parsed = ParsedCard(
                 name=snapshot.name,
@@ -909,7 +920,7 @@ class TinyFishLiveClient:
                 )
             listings = [hit for hit in found.results if PRODUCT_URL_RE[platform].search(hit.url)]
             # Prefer a listing whose title names the same pack size.
-            ranked = sorted(listings, key=lambda hit: same_pack(query, hit.title) is not True)
+            ranked = sorted(listings, key=lambda hit: same_variant(query, hit.title) is not True)
             if ranked:
                 listing_urls.put(key, ranked[0].url)
                 return ranked[0].url

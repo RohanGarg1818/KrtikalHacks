@@ -1,4 +1,4 @@
-"""Pack-size matching, so a price is only reported for the exact pack asked for.
+"""Pack-size and model matching, so a price is only reported for the exact item asked for.
 
 Agents and product searches often land on a neighbouring pack (200 ml or 1 L
 when 500 ml was asked for). Comparing the pack size in the query with the pack
@@ -57,3 +57,35 @@ def pack_label(text: str | None) -> str | None:
     else:
         label = f"{amount:g} {unit}"
     return f"{count} × {label}" if count > 1 else label
+
+
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def model_numbers(text: str | None) -> set[str]:
+    """Numbers that identify a model or pack: "JBL Go 3" -> {"3"}, "3i 20000mAh" -> {"3", "20000"}."""
+    # Pack sizes are compared by same_pack (so "500 ml" equals "0.5 L"); skip them here.
+    return set(_NUMBER_RE.findall(_SIZE_RE.sub(" ", text or "")))
+
+
+_ACCESSORY_RE = re.compile(
+    r"\b(pouch|cover|skin|sleeve|protector|screen guard|tempered glass|sticker|decal|strap|holder|mount)\b",
+    re.IGNORECASE,
+)
+
+
+def same_variant(query: str, product_name: str | None) -> bool | None:
+    """False when the pack size differs or a model number from the query is missing.
+
+    True when everything that can be compared matches, None when the matched
+    name is unknown. Covers groceries (500 ml vs 1 L) and gadgets (Go 3 vs Go 4).
+    """
+    if not product_name:
+        return None
+    if same_pack(query, product_name) is False:
+        return False
+    # "Pouch for Mi Power Bank 3i" mentions the model but is an accessory.
+    accessory = _ACCESSORY_RE.search(product_name)
+    if accessory and not re.search(re.escape(accessory.group(1)), query, re.IGNORECASE):
+        return False
+    return model_numbers(query) <= model_numbers(product_name)
