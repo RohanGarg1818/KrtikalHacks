@@ -1,0 +1,159 @@
+code,area_name,city,lat,lng
+110001,Connaught Place,Delhi,28.6315,77.2167
+110002,Daryaganj,Delhi,28.6351,77.238
+110003,Lodhi Road,Delhi,28.5914,77.2277
+110005,Karol Bagh,Delhi,28.6510,77.1900
+110006,Chandni Chowk,Delhi,28.6554,77.229
+110007,Civil Lines,Delhi,28.6769,77.2256
+110008,Rajinder Nagar,Delhi,28.6410,77.1845
+110009,Model Town,Delhi,28.7077,77.2084
+110010,Delhi Cantt,Delhi,28.5816,77.1218
+110011,South Avenue,Delhi,28.6035,77.2137
+110012,Pusa,Delhi,28.6372,77.1565
+110013,Nizamuddin,Delhi,28.5887,77.2532
+110014,Jangpura,Delhi,28.5783,77.2457
+110015,Kirti Nagar,Delhi,28.6531,77.1424
+110016,Hauz Khas,Delhi,28.5494,77.2001
+110017,Saket,Delhi,28.5245,77.2066
+110018,Janakpuri,Delhi,28.6219,77.0878
+110019,Kalkaji,Delhi,28.5416,77.2600
+110020,Okhla Industrial Area,Delhi,28.5355,77.2710
+110021,Anand Niketan,Delhi,28.5694,77.1709
+110022,R K Puram,Delhi,28.5677,77.1780
+110023,Sarojini Nagar,Delhi,28.5755,77.1968
+110024,Lajpat Nagar,Delhi,28.5677,77.2432
+110025,Jamia Nagar,Delhi,28.5610,77.2780
+110026,Punjabi Bagh,Delhi,28.6599,77.1381
+110027,Rajouri Garden,Delhi,28.6469,77.1197
+110028,Naraina,Delhi,28.6190,77.1390
+110029,Safdarjung Enclave,Delhi,28.5597,77.1962
+110030,Mehrauli,Delhi,28.5200,77.1855
+110031,Gandhi Nagar,Delhi,28.6531,77.2732
+110032,Shahdara,Delhi,28.6761,77.2861
+110033,Jahangirpuri,Delhi,28.7273,77.1698
+110034,Pitampura,Delhi,28.6945,77.1333
+110035,Rampura,Delhi,28.683,77.1616
+110036,Palla,Delhi,28.7921,77.1584
+110037,Mahipalpur,Delhi,28.5454,77.1248
+110038,Rajokari,Delhi,28.5175,77.1032
+110039,Bawana,Delhi,28.8105,77.0285
+110040,Narela,Delhi,28.8459,77.0907
+110041,Nangloi,Delhi,28.6704,77.0533
+110042,Siraspur,Delhi,28.7451,77.1597
+110043,Najafgarh,Delhi,28.5908,76.9686
+110044,Badarpur,Delhi,28.5095,77.2983
+110045,Dabri,Delhi,28.5934,77.0801
+110046,Sagarpur,Delhi,28.5974,77.1265
+110047,Chhatarpur,Delhi,28.4695,77.1354
+110048,Greater Kailash,Delhi,28.5490,77.2426
+110049,Gulmohar Park,Delhi,28.5598,77.2143
+110051,Krishna Nagar,Delhi,28.6543,77.2866
+110052,Ashok Vihar,Delhi,28.6824,77.1758
+110053,Maujpur,Delhi,28.6929,77.2701
+110054,Timarpur,Delhi,28.6823,77.2209
+110055,Paharganj,Delhi,28.644,77.2087
+110056,New Multan Nagar,Delhi,28.68,77.1067
+110057,Vasant Vihar,Delhi,28.5589,77.1577
+110058,Janakpuri B-1,Delhi,28.4788,77.0433
+110059,Matiala,Delhi,28.6195,77.0537
+110060,Patel Nagar,Delhi,28.6519,77.1642
+110061,Bijwasan,Delhi,28.5486,77.057
+110062,Dakshinpuri,Delhi,28.5131,77.2378
+110063,Paschim Vihar,Delhi,28.6733,77.1076
+110064,Hari Nagar BE Block,Delhi,28.6264,77.1125
+110065,East of Kailash,Delhi,28.5572,77.2521
+110066,R K Puram West,Delhi,28.5631,77.1861
+110067,JNU,Delhi,28.5466,77.1702
+110068,"IGNOU, Maidan Garhi",Delhi,28.5073,77.2
+110070,Vasant Kunj,Delhi,28.5341,77.1568
+110071,Chhawla,Delhi,28.5526,77.0008
+110072,Jharoda Kalan,Delhi,28.6514,76.9476
+110073,Ujwa,Delhi,28.5639,76.8957
+110074,Dera,Delhi,28.4837,77.1867
+110075,Dwarka,Delhi,28.5924,77.0566
+110076,Sarita Vihar,Delhi,28.541,77.2666
+110077,Bagdola,Delhi,28.5724,77.0663
+110078,Kakrola,Delhi,28.6064,77.0381
+110080,Sangam Vihar,Delhi,28.4982,77.2445
+110081,Gheora,Delhi,28.7185,77.005
+110082,Khera Kalan,Delhi,28.7916,77.1023
+110083,Mangolpuri S Block,Delhi,28.6925,77.0881
+110084,Burari,Delhi,28.7423,77.2023
+110085,Rohini Sector 11,Delhi,28.7191,77.1156
+110086,Sultanpuri C Block,Delhi,28.7044,77.0633
+110087,Jwala Puri,Delhi,28.6636,77.089
+110088,Shalimar Bagh,Delhi,28.7093,77.1627
+110089,Rohini Sector 15,Delhi,28.7291,77.1282
+110090,Dayalpur,Delhi,28.7046,77.2644
+110091,Mayur Vihar Phase 1,Delhi,28.6077,77.2966
+110092,Laxmi Nagar,Delhi,28.6273,77.3162
+110093,Nand Nagri C,Delhi,28.6879,77.2943
+110094,Sabhapur,Delhi,28.7161,77.2737
+110095,Dilshad Garden,Delhi,28.6789,77.3141
+110096,Mayur Vihar Phase 3,Delhi,28.6035,77.3208
+110097,Kapashera,Delhi,28.5273,77.0823
+121001,NIT Faridabad,Faridabad,28.3955,77.3025
+121002,Faridabad City,Faridabad,28.4153,77.3301
+121003,Tilpat,Faridabad,28.4657,77.3083
+121004,Ballabgarh,Faridabad,28.344,77.3269
+121005,Jawahar Colony Faridabad,Faridabad,28.3651,77.2959
+121006,G.T. Road Faridabad,Faridabad,28.3706,77.3255
+121007,Escorts Nagar,Faridabad,28.3905,77.3231
+121008,Faridabad Sector 29,Faridabad,28.4344,77.3188
+121009,Surajkund Faridabad,Faridabad,28.4928,77.2948
+121010,Nhpc Colony Faridabad,Faridabad,28.4804,77.2978
+121012,Faridabad Sector 21D,Faridabad,28.4314,77.2817
+121013,Faridabad Sector 91,Faridabad,28.4674,77.3355
+121014,Greater Faridabad,Faridabad,28.279,77.3986
+121015,Faridabad Sector 55,Faridabad,28.3443,77.2954
+201001,Ramte Ram Road,Ghaziabad,28.6608,77.4242
+201002,Raknpa,Ghaziabad,28.6684,77.4521
+201003,Morta,Ghaziabad,28.7128,77.3775
+201004,Hindon Air Field,Ghaziabad,28.6881,77.3615
+201005,Bhopura,Ghaziabad,28.6849,77.3641
+201006,Chikamberpur,Ghaziabad,28.6771,77.3257
+201007,Mohan Nagar (Ghaziabad),Ghaziabad,28.6776,77.3831
+201009,Ghaziabad City,Ghaziabad,28.6428,77.4367
+201010,Sahibabad,Ghaziabad,28.6494,77.3562
+201011,Chander Nagar,Ghaziabad,28.6676,77.3327
+201012,Kaushambi,Ghaziabad,28.6568,77.366
+201013,Govindpuram,Ghaziabad,28.6831,77.4869
+201014,Indirapuram,Ghaziabad,28.6411,77.3671
+201015,Dasna,Ghaziabad,28.692,77.5507
+201016,Crossing Republik,Ghaziabad,28.6276,77.4384
+201017,Raj Nagar Extension,Ghaziabad,28.7055,77.4362
+201018,Model Town,Ghaziabad,28.6508,77.4432
+201019,Vaishali,Ghaziabad,28.6478,77.3475
+201306,Kulesra,Greater Noida,28.5011,77.4765
+201310,Ghori,Greater Noida,28.4555,77.5008
+201312,Kasna,Greater Noida,28.4195,77.5259
+201318,Greater Noida Sector 1,Greater Noida,28.5971,77.4379
+122001,Gurugram City,Gurugram,28.4678,77.0348
+122002,DLF Qutab Enclave,Gurugram,28.4828,77.0919
+122003,Jharsa,Gurugram,28.4321,77.0725
+122004,Khandsa,Gurugram,28.4024,77.0093
+122005,Air Force,Gurugram,28.4375,77.0266
+122006,Basai,Gurugram,28.483,76.9982
+122007,Udyog Vihar,Gurugram,28.4706,77.0583
+122008,DLF Ph-II,Gurugram,28.3963,77.0767
+122009,Galleria DLF-IV,Gurugram,28.4637,77.0833
+122010,DLF Ph-III,Gurugram,28.4965,77.0967
+122011,Gurgaon Sector 56,Gurugram,28.4285,77.0923
+122012,Vatika India Sector 82 Gurgaon,Gurugram,28.4507,77.064
+122015,Palam Vihar,Gurugram,28.3816,77.0205
+122016,Dundahera,Gurugram,28.5089,77.0751
+122017,Carterpuri,Gurugram,28.5124,77.0417
+122018,Gurgaon South City II,Gurugram,28.4197,77.0521
+122051,Manesar,Gurugram,28.3625,76.9257
+122052,IMT Manesar,Gurugram,28.364,76.9256
+201301,Noida Sector 18,Noida,28.5539,77.3794
+201303,Noida Sector 37,Noida,28.5545,77.3603
+201304,Gejha,Noida,28.5273,77.3889
+201305,Nagla Charandas,Noida,28.5235,77.4165
+201307,Sarfabad,Noida,28.5984,77.3713
+201309,Chhajarsi,Noida,28.6135,77.3686
+201313,Noida Sector 125,Noida,28.5464,77.332
+201314,Kot,Noida,28.5289,77.5725
+201315,Gurjinder Vihar,Noida,28.4538,77.5009
+201316,Sector-122 Noida,Noida,28.5928,77.3872
+201317,Sector-128 Noida,Noida,28.5444,77.3392

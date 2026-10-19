@@ -25,7 +25,7 @@ from app.models.intelligence import AISummary, Alert, Recommendation, ReviewInsi
 from app.models.product import Competitor, Pincode, Product, ProductPincode
 from app.models.user import Subscription, User, UserSettings
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "pincodes_delhi.csv"
+DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "pincodes_ncr.csv"
 SEED_CODES = [
     "110003",
     "110014",

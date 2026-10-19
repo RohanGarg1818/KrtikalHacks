@@ -71,3 +71,23 @@ async def test_update_profile() -> None:
         res = await client.patch("/api/me", json={"default_city": "Gurugram"})
         assert res.status_code == 200 and res.json()["default_city"] == "Gurugram"
         await client.patch("/api/me", json={"default_city": original})
+
+
+@pytest.mark.asyncio
+async def test_catalogue_covers_delhi_and_ncr_and_gurgaon_rules_resolve() -> None:
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        pins = (await client.get("/api/pincodes")).json()
+        product_id = (await client.get("/api/products")).json()[0]["id"]
+        rule = (
+            await client.post(
+                f"/api/products/{product_id}/alert-rules/parse",
+                json={"text": "Alert me if we go out of stock in Gurgaon"},
+            )
+        ).json()
+    cities = {pin["city"] for pin in pins}
+    assert {"Delhi", "Gurugram", "Noida", "Ghaziabad", "Faridabad"} <= cities
+    assert sum(pin["city"] == "Delhi" for pin in pins) >= 90
+    assert rule["kind"] == "oos_area" and rule["rule_json"]["pincodes"]
+    assert all(code.startswith("122") for code in rule["rule_json"]["pincodes"])

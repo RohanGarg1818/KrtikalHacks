@@ -239,7 +239,7 @@ shelfsense/
 │   │   ├── scheduler.py
 │   │   └── utils/
 │   ├── alembic/  alembic.ini
-│   ├── data/pincodes_delhi.csv
+│   ├── data/pincodes_ncr.csv   # 158 Delhi-NCR pincodes (scripts/build_pincodes.py)
 │   ├── scripts/seed.py
 │   ├── tests/
 │   ├── .env.example
@@ -470,6 +470,10 @@ Check each platform's terms of service before any production use.
 **Team CodeCrunchers · USICT, GGSIPU · HackIIITD**
 
 ---
+
+## Data sources
+
+- **Pincodes (Delhi and NCR):** 158 pincodes covering all of Delhi plus Gurugram, Noida, Greater Noida, Ghaziabad and Faridabad. The pincode list and post-office names come from [GeoNames](https://www.geonames.org/) (CC BY 4.0); positions come from [OpenStreetMap](https://www.openstreetmap.org/copyright) Nominatim (© OpenStreetMap contributors, ODbL). Rebuild with `python -m scripts.build_pincodes IN.txt`.
 
 ## License
 

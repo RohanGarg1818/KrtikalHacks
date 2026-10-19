@@ -45,6 +45,8 @@ from .heatmap import selected_pairs
 from .insights import _latest_rival_rows, _latest_seller_rows
 
 logger = logging.getLogger("shelfsense.alerts")
+# Older or informal city names sellers type in alert rules.
+CITY_ALIASES = {"gurgaon": "gurugram", "new delhi": "delhi", "greater noida west": "greater noida"}
 # Longest Telegram digest; the rest is summarised as "…and N more".
 MAX_DIGEST_LINES = 12
 
@@ -118,6 +120,7 @@ def _matches_area(
     area: str, city: str, wanted: str, coords: tuple[float, float] | None = None
 ) -> bool:
     wanted = wanted.strip().lower()
+    wanted = CITY_ALIASES.get(wanted, wanted)
     if not wanted:
         return False
     zone = in_city_zone(wanted, city, coords)
