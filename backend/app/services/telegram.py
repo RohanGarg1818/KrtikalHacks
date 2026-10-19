@@ -200,6 +200,22 @@ async def redeem_link_code(
     return link
 
 
+async def link_code_problem(session: AsyncSession, code_value: str) -> str:
+    """Why a code did not link, in words the person in the chat can act on."""
+    fresh = (
+        "Ask the product owner to open the product's Telegram tab on the ShelfSense "
+        "website and send you a NEW link (each link works for one chat, once)."
+    )
+    row = await session.get(TelegramLinkCode, code_value)
+    if row is None:
+        return f"That code doesn't exist. Check you copied it fully. {fresh}"
+    if row.used_at is not None:
+        return f"That link was already used by another chat. {fresh}"
+    if row.expires_at <= utcnow():
+        return f"That link expired (links last {LINK_CODE_TTL_MINUTES} minutes). {fresh}"
+    return f"That code could not be used. {fresh}"
+
+
 async def unlink_link(session: AsyncSession, link_id: str) -> bool:
     """Delete one link by id; the chat stays linked to its other products."""
     result = await session.execute(delete(TelegramLink).where(TelegramLink.id == link_id))
@@ -369,10 +385,7 @@ async def _handle_start(update, context) -> None:
             telegram_user_id=str(sender.id) if sender is not None else None,
         )
         if link is None:
-            await message.reply_text(
-                "That code is invalid or expired. Generate a fresh one on your "
-                "ShelfSense product page and try again."
-            )
+            await message.reply_text(await link_code_problem(session, args[0].strip()))
             return
         product = await session.get(Product, link.product_id)
         name = product.name if product else "your product"
@@ -385,42 +398,31 @@ async def _handle_start(update, context) -> None:
 
 
 async def _handle_status(update, context) -> None:
-    """Bot /status: latest numbers for every product linked to this chat."""
+    """Bot /status: full report across all 4 apps for each linked product."""
+    from .telegram_features import send_report
+
     del context
-    message = update.effective_message
-    chat = update.effective_chat
-    if message is None or chat is None:
-        return
-    async with SessionLocal() as session:
-        links = await chat_links(session, str(chat.id))
-        if not links:
-            await message.reply_text(
-                "This chat is not connected. Use /start <code> from your "
-                "ShelfSense product page first."
-            )
-            return
-        lines: list[str] = []
-        for link in links[:CHAT_PRODUCT_LIMIT]:
-            product = await session.get(Product, link.product_id)
-            name = product.name if product else "Unknown product"
-            context_data = await build_context(session, link.product_id)
-            if context_data is None:
-                lines.append(f"{name}: no check data yet.")
-                continue
-            avg = context_data.get("avg_price")
-            rival = context_data.get("cheapest_rival")
-            stock = context_data.get("in_stock") or 0
-            total = context_data.get("total_pins") or 0
-            if avg is not None and rival is not None:
-                lines.append(
-                    f"{name}: avg ₹{avg:.2f} (rival ₹{rival:.2f}), "
-                    f"{stock}/{total} pins in stock."
-                )
-            else:
-                lines.append(f"{name}: {stock}/{total} pins in stock.")
-        if len(links) > CHAT_PRODUCT_LIMIT:
-            lines.append(f"…and {len(links) - CHAT_PRODUCT_LIMIT} more products.")
-    await message.reply_text("\n".join(lines))
+    message, chat = update.effective_message, update.effective_chat
+    if message is not None and chat is not None:
+        await send_report(message, str(chat.id))
+
+
+async def _handle_products(update, context) -> None:
+    from .telegram_features import send_products
+
+    del context
+    message, chat = update.effective_message, update.effective_chat
+    if message is not None and chat is not None:
+        await send_products(message, str(chat.id))
+
+
+async def _handle_last(update, context) -> None:
+    from .telegram_features import send_last_checked
+
+    del context
+    message, chat = update.effective_message, update.effective_chat
+    if message is not None and chat is not None:
+        await send_last_checked(message, str(chat.id))
 
 
 def products_for_question(products: list[Product], question: str) -> list[Product]:
@@ -553,7 +555,7 @@ async def _handle_check(update, context) -> None:
 
 
 async def _handle_callback(update, context) -> None:
-    from .telegram_features import handle_check_callback
+    from .telegram_features import handle_check_callback, handle_product_callback
 
     query = update.callback_query
     data = (query.data or "") if query is not None else ""
@@ -566,6 +568,12 @@ async def _handle_callback(update, context) -> None:
             await _handle_compare(update, context)
         elif action == "check":
             await _handle_check(update, context)
+        elif action == "products":
+            await _handle_products(update, context)
+        elif action == "last":
+            await _handle_last(update, context)
+        return
+    if await handle_product_callback(update, context):
         return
     if await handle_check_callback(update, context):
         return
@@ -597,6 +605,8 @@ async def start_bot() -> bool:
         application.add_handler(CommandHandler(["menu", "help"], _handle_menu))
         application.add_handler(CommandHandler("compare", _handle_compare))
         application.add_handler(CommandHandler("check", _handle_check))
+        application.add_handler(CommandHandler("products", _handle_products))
+        application.add_handler(CommandHandler(["last", "lastchecked"], _handle_last))
         application.add_handler(
             MessageHandler(
                 filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, _handle_text

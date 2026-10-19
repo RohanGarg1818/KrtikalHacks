@@ -78,6 +78,7 @@ from .marketplace import (
     fetched_pages,
     listing_urls,
 )
+from .pack import pack_label, same_variant
 
 if TYPE_CHECKING:
     from playwright.async_api import Locator, Page
@@ -107,6 +108,7 @@ AGENT_REST_URL = "https://agent.tinyfish.ai"
 # Docs: Search 1-3 s (suggested timeout 10 s); Fetch up to 110 s per URL (150 s).
 SEARCH_TIMEOUT_SECONDS = 15.0
 FETCH_TIMEOUT_SECONDS = 150.0
+MIN_PAGE_CHARS = 500
 FETCH_RETRYABLE_ERRORS = {"timeout", "target_timeout", "service_busy", "internal_error"}
 
 # How each app is checked, from live tests on 2026-10-18 (pincode 110017):
@@ -136,9 +138,10 @@ AGENT_OUTPUT_SCHEMA = {
         "eta_minutes": {"type": "integer", "nullable": True},
         "blocked": {"type": "boolean"},
         "notes": {"type": "string", "nullable": True},
+        "exact_match": {"type": "boolean"},
     },
     "required": [
-        "location_set", "product_name", "in_stock", "price", "mrp",
+        "location_set", "product_name", "exact_match", "in_stock", "price", "mrp",
         "eta_minutes", "blocked", "notes",
     ],
 }
@@ -311,6 +314,7 @@ class AgentCheckOutput(BaseModel):
     eta_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
     blocked: bool = False
     notes: str | None = None
+    exact_match: bool | None = None
 
 
 def build_agent_goal(platform: str, pincode: str, query: str, url: str | None) -> str:
@@ -318,8 +322,10 @@ def build_agent_goal(platform: str, pincode: str, query: str, url: str | None) -
     find = (
         f"2. Open the product page at {url}."
         if url
-        else f'2. Search for "{query}" and find the product card that best matches it '
-        "(prefer the exact pack size; otherwise the closest match)."
+        else f'2. Search for "{query}" and find the product card for exactly this product '
+        f"and pack size ({pack_label(query) or 'as named'}). If that exact pack is not listed, "
+        "set exact_match=false and report the closest product instead (its full name with "
+        "pack size); never present a different pack as the requested one."
     )
     return (
         f"You are checking price and stock on {site_label(platform)} for delivery pincode {pincode}.\n"
@@ -327,7 +333,7 @@ def build_agent_goal(platform: str, pincode: str, query: str, url: str | None) -
         f"open the location picker, type {pincode} into the address search box and choose the "
         "first suggestion (confirm it if asked). Set location_set=true only once it is set.\n"
         f"{find}\n"
-        "3. Read: the product name, the selling price in rupees, the MRP if shown struck "
+        "3. Read: the product name exactly as shown including its pack size, the selling price in rupees, the MRP if shown struck "
         "through, whether it is in stock (an ADD or + button) or out of stock (Out of stock, "
         "Sold out, Notify me), and the delivery time in minutes shown on the page. Read "
         "these from the search results card; do not open product detail pages, and do not "
@@ -339,6 +345,23 @@ def build_agent_goal(platform: str, pincode: str, query: str, url: str | None) -
         "requires login to continue, stop and set blocked=true.\n"
         "Return only the requested JSON; use null for anything not visible."
     )
+
+
+def url_slug_words(url: str | None) -> str:
+    """Words from a product URL's slug: ".../mi-3i-20000-mah-power-bank/p/itm..." -> "mi 3i 20000 mah power bank"."""
+    if not url:
+        return ""
+    path = url.split("?")[0].split("://")[-1].split("/", 1)[-1]
+    slug = path.split("/p/")[0].split("/dp/")[0].rsplit("/", 1)[-1]
+    return slug.replace("-", " ")
+
+
+def not_listed_note(query: str, matched: str | None, price: float | None) -> str:
+    wanted = pack_label(query) or "This exact model"
+    closest = f"; closest listed: {matched}" if matched else ""
+    if matched and price is not None:
+        closest += f" at {format_rupees(price)}"
+    return f"{wanted} not listed{closest}. Price not reported for a different item."
 
 
 def _step_kind(purpose: str) -> AgentStepKind:
@@ -749,15 +772,24 @@ class TinyFishLiveClient:
                 agent=trace.as_raw(),
             )
 
-        parsed = ParsedCard(
-            name=output.product_name,
-            price=output.price,
-            mrp=output.mrp if output.mrp and output.price and output.mrp > output.price else None,
-            in_stock=output.in_stock,
-            eta_minutes=output.eta_minutes,
-        )
+        exact = output.exact_match is not False and same_variant(query, output.product_name) is not False
+        notes = [output.notes] if output.notes else []
+        if exact:
+            parsed = ParsedCard(
+                name=output.product_name,
+                price=output.price,
+                mrp=output.mrp if output.mrp and output.price and output.mrp > output.price else None,
+                in_stock=output.in_stock,
+                eta_minutes=output.eta_minutes,
+            )
+        else:
+            # Never report another pack's price as this product's price.
+            parsed = ParsedCard(name=output.product_name, in_stock=False, eta_minutes=output.eta_minutes)
+            notes.insert(0, not_listed_note(query, output.product_name, output.price))
         await trace.step(
-            "extract", "Reading price, stock and delivery time", _extract_detail(parsed, 1)
+            "extract",
+            "Reading price, stock and delivery time",
+            _extract_detail(parsed, 1) if exact else notes[0],
         )
         await trace.step("screenshot", "Saving evidence screenshot")
         screenshot = await self._agent_screenshot(run_id) if run_id else None
@@ -777,7 +809,10 @@ class TinyFishLiveClient:
                 "platform": platform,
                 "pincode": pincode,
                 "url": target_url,
-                "notes": output.notes,
+                "product": output.product_name,
+                "exact_match": exact,
+                "closest_price": None if exact else output.price,
+                "notes": notes,
                 "agent": trace.as_raw(),
             },
         )
@@ -814,7 +849,8 @@ class TinyFishLiveClient:
             raise error from exc
 
         text = page.get("text") or ""
-        if BLOCKED_RE.search(text[:3000]) and len(text) < 3000:
+        # A near-empty page is a bot check, not the product page.
+        if len(text) < MIN_PAGE_CHARS or (BLOCKED_RE.search(text[:3000]) and len(text) < 3000):
             await trace.step("error", "Page blocked automation")
             raise TinyFishError(
                 f"{domain} blocked the page fetch ({platform})",
@@ -829,14 +865,21 @@ class TinyFishLiveClient:
                 retryable=False,
                 agent=trace.as_raw(),
             )
-        parsed = ParsedCard(
-            name=snapshot.name,
-            price=snapshot.price,
-            mrp=snapshot.mrp,
-            in_stock=snapshot.in_stock,
-            eta_minutes=snapshot.eta_minutes,
-        )
-        detail = _extract_detail(parsed, 1)
+        # The product link often carries the model ("mi-3i-20000-mah-...") when the
+        # page's display name drops it.
+        exact = same_variant(query, f"{snapshot.name or ''} {url_slug_words(url)}".strip() or None) is not False
+        if exact:
+            parsed = ParsedCard(
+                name=snapshot.name,
+                price=snapshot.price,
+                mrp=snapshot.mrp,
+                in_stock=snapshot.in_stock,
+                eta_minutes=snapshot.eta_minutes,
+            )
+        else:
+            parsed = ParsedCard(name=snapshot.name, in_stock=False)
+            snapshot.notes.insert(0, not_listed_note(query, snapshot.name, snapshot.price))
+        detail = _extract_detail(parsed, 1) if exact else snapshot.notes[0]
         if snapshot.delivery_text:
             detail = f"{detail} · {snapshot.delivery_text}"
         await trace.step("extract", "Reading price, stock and delivery", detail)
@@ -854,6 +897,9 @@ class TinyFishLiveClient:
                 "pincode": pincode,
                 "pincode_specific": False,
                 "url": url,
+                "product": snapshot.name,
+                "exact_match": exact,
+                "closest_price": None if exact else snapshot.price,
                 "delivery_text": snapshot.delivery_text,
                 "delivery_fee": snapshot.delivery_fee,
                 "notes": snapshot.notes,
@@ -872,10 +918,12 @@ class TinyFishLiveClient:
                 found = await client.search.query(
                     query, location="IN", language="en", include_domains=MARKETPLACES[platform]
                 )
-            for hit in found.results:
-                if PRODUCT_URL_RE[platform].search(hit.url):
-                    listing_urls.put(key, hit.url)
-                    return hit.url
+            listings = [hit for hit in found.results if PRODUCT_URL_RE[platform].search(hit.url)]
+            # Prefer a listing whose title names the same pack size.
+            ranked = sorted(listings, key=lambda hit: same_variant(query, hit.title) is not True)
+            if ranked:
+                listing_urls.put(key, ranked[0].url)
+                return ranked[0].url
         raise TinyFishError(
             f"No {MARKETPLACES[platform]} listing found for “{query}”; add the product link "
             "in the product's listings",

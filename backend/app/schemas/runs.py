@@ -38,6 +38,7 @@ class RunResultItem(BaseModel):
     delivery_text: str | None = None
     notes: list[str] = Field(default_factory=list)
     step_count: int = 0
+    exact_match: bool = True
 
 
 class RunResponse(BaseModel):

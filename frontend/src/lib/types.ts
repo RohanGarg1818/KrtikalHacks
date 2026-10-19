@@ -338,6 +338,7 @@ export interface RunResultRef {
   delivery_text?: string | null;
   notes?: string[];
   step_count?: number;
+  exact_match?: boolean;
 }
 
 /** `GET /runs/{id}`. */

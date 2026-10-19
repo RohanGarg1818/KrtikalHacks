@@ -326,6 +326,7 @@ def result_provenance(raw: dict) -> dict:
         "delivery_text": raw.get("delivery_text"),
         "notes": [str(note) for note in notes or [] if note],
         "step_count": len(agent.get("steps") or []),
+        "exact_match": raw.get("exact_match") is not False,
     }
 
 

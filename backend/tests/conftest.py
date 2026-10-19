@@ -39,7 +39,7 @@ async def _prepare_database() -> None:
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    await seed()
+    await seed(demo_data=True)
     # Pooled aiosqlite connections are bound to this temporary event loop; drop them.
     await engine.dispose()
 

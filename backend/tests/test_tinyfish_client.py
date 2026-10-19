@@ -229,3 +229,80 @@ async def test_app_status_endpoint_lists_every_app() -> None:
     apps = {row["platform"]: row for row in res.json()}
     assert set(apps) == {"blinkit", "zepto", "instamart", "amazon", "flipkart"}
     assert all(row["status"] in ("live", "cached", "unavailable", "simulated") for row in apps.values())
+
+
+def test_pack_size_matching_rejects_other_packs() -> None:
+    from app.services.tinyfish.pack import pack_label, same_pack
+    from app.services.tinyfish.tinyfish_client import not_listed_note
+
+    assert same_pack(QUERY, "Amul Taaza Pouch, 500 ml") is True
+    assert same_pack(QUERY, "Amul Taaza Toned Milk 0.5 L") is True
+    assert same_pack(QUERY, "Amul Taaza Homogenised Toned Milk (Tetra Pack) 200 ml") is False
+    assert same_pack(QUERY, "Amul Taaza Toned Milk 1 ltr") is False
+    assert same_pack(QUERY, "Amul Taaza 200ml x 2") is False
+    assert same_pack(QUERY, "Amul Taaza Toned Milk") is None  # name has no size: can't tell
+    assert pack_label("Haldiram's Bhujia 1Kg") == "1 kg"
+    note = not_listed_note(QUERY, "Amul Taaza Toned Milk 1 ltr", 77.0)
+    assert note.startswith("500 ml not listed") and "₹77" in note
+
+
+@pytest.mark.asyncio
+async def test_default_seed_adds_no_simulated_products() -> None:
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models.product import Product
+    from scripts.seed import seed
+
+    async with SessionLocal() as session:
+        before = await session.scalar(select(func.count(Product.id)))
+    await seed()  # real deployments: pincodes and account only
+    async with SessionLocal() as session:
+        assert await session.scalar(select(func.count(Product.id))) == before
+
+
+def test_amazon_offer_without_stock_text_counts_as_in_stock() -> None:
+    from app.services.tinyfish.marketplace import parse_amazon
+
+    text = "##### One-time purchase ₹56.00 ₹28.00 per g ₹60 delivery Friday, 20 November Ships from: X"
+    page = parse_amazon(text, "Haldiram's Delhi Bhujia, 200g : Amazon.in")
+    assert page.price == 56.0 and page.in_stock is True
+
+
+def test_exact_model_matching_for_gadgets() -> None:
+    from app.services.tinyfish.pack import same_variant
+
+    assert same_variant("JBL Go 3 Bluetooth Speaker", "JBL Go 3 Wireless Portable Speaker") is True
+    assert same_variant("JBL Go 3 Bluetooth Speaker", "JBL Go 4 Ultra Portable Speaker") is False
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Xiaomi Power Bank 4i 20000mAh 33W") is False
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Mi Power Bank 3i 20000mAh 18W") is True
+    assert same_variant(QUERY, "Amul Taaza Toned Milk 0.5 L") is True
+    assert same_variant(QUERY, "Amul Taaza Toned Milk 1 ltr") is False
+    assert same_variant("boAt Airdopes 141", None) is None
+
+
+def test_gadget_pages_read_the_real_price_not_add_ons_or_ads() -> None:
+    from app.services.tinyfish.marketplace import parse_amazon, parse_flipkart
+    from app.services.tinyfish.pack import same_variant
+
+    amazon = parse_amazon((FIXTURES / "amazon_jbl_go3.txt").read_text(), "JBL Go 3 Wireless Portable Bluetooth Mini Speaker : Amazon.in")
+    assert amazon.price == 2849.05 and amazon.mrp == 3999.0 and amazon.in_stock is True  # not the ₹149 warranty plan
+    airpods = parse_amazon((FIXTURES / "amazon_airpods_unavailable.txt").read_text(), "Apple AirPods Pro 2")
+    assert airpods.in_stock is False and airpods.price is None
+    flipkart = parse_flipkart((FIXTURES / "flipkart_jbl_go3.txt").read_text(), "Buy JBL GO 3 with IP67 Water and Dust Resistant 4.2 W Bluetooth Speaker")
+    assert flipkart.price == 2999.0 and flipkart.mrp == 3999.0  # not the ₹1,799 sponsored boAt ad
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Gizmofreaks Pouch for Mi Power Bank 3i 20000mAh") is False
+
+
+def test_flipkart_gadget_price_after_selected_variant_and_model_from_url() -> None:
+    from app.services.tinyfish.marketplace import parse_flipkart
+    from app.services.tinyfish.pack import same_variant
+    from app.services.tinyfish.tinyfish_client import url_slug_words
+
+    mi = parse_flipkart((FIXTURES / "flipkart_mi_3i.txt").read_text(), "Mi 20000 mAh 18 W Power Bank Price in India")
+    assert mi.price == 3499.0 and mi.in_stock is True  # not an ad, not the ₹3,324 after-offer price
+    boat = parse_flipkart((FIXTURES / "flipkart_boat_141.txt").read_text(), "boAt Airdopes 141 Gen 2")
+    assert boat.price == 799.0 and boat.mrp == 3990.0 and boat.in_stock is False  # "Notify Me"
+    slug = url_slug_words("https://www.flipkart.com/mi-3i-20000-mah-power-bank-fast-charging-18w/p/itmd42cbbe08e65e")
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", f"Mi 20000 mAh 18 W Power Bank {slug}") is True
+    assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Mi 20000 mAh 18 W Power Bank") is False
