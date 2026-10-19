@@ -476,6 +476,38 @@ async def _handle_ask(update, context) -> None:
     await message.reply_text("\n\n".join(answers)[:4000])
 
 
+GREETINGS = {"hi", "hii", "hello", "hey", "hlo", "menu", "help", "start", "namaste"}
+
+
+async def _handle_text(update, context) -> None:
+    """Plain messages in a private chat: greetings get the menu, anything else is /ask."""
+    from types import SimpleNamespace
+
+    from .telegram_features import main_menu
+
+    message = update.effective_message
+    chat = update.effective_chat
+    if message is None or chat is None or not message.text:
+        return
+    text = message.text.strip()
+    async with SessionLocal() as session:
+        linked = bool(await chat_links(session, str(chat.id)))
+    if not linked:
+        await message.reply_text(
+            "This chat is not connected yet. Open your product's Telegram tab on the "
+            "ShelfSense website and tap the link, or send /link <code>."
+        )
+        return
+    if text.lower().strip("!.? ") in GREETINGS:
+        await message.reply_text(
+            "Hi! Tap a button, or just ask me something like "
+            "\"where am I out of stock?\"",
+            reply_markup=main_menu(),
+        )
+        return
+    await _handle_ask(update, SimpleNamespace(args=text.split()))
+
+
 async def _handle_stop(update, context) -> None:
     """Bot /stop: disconnect this chat from all products."""
     del context
@@ -553,6 +585,8 @@ async def start_bot() -> bool:
             Application,
             CallbackQueryHandler,
             CommandHandler,
+            MessageHandler,
+            filters,
         )
 
         application = Application.builder().token(settings.telegram_bot_token).build()
@@ -563,6 +597,11 @@ async def start_bot() -> bool:
         application.add_handler(CommandHandler(["menu", "help"], _handle_menu))
         application.add_handler(CommandHandler("compare", _handle_compare))
         application.add_handler(CommandHandler("check", _handle_check))
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, _handle_text
+            )
+        )
         application.add_handler(CallbackQueryHandler(_handle_callback))
         await application.initialize()
         from .telegram_features import configure_bot_profile
