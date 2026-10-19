@@ -82,3 +82,23 @@ async def test_all_products_chat_covers_every_product_and_naming_one_focuses() -
     assert overall["answer"].startswith("Across your")
     assert sum(name in overall["answer"] for name in names) >= 2
     assert "Paper Boat" in focused["answer"] and "Across your" not in focused["answer"]
+
+
+@pytest.mark.asyncio
+async def test_plain_messages_get_a_reply_instead_of_silence() -> None:
+    from app.services.telegram import _handle_text
+
+    class Msg:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    message = Msg("hi")
+    update = SimpleNamespace(
+        effective_message=message, effective_chat=SimpleNamespace(id=424242, type="private")
+    )
+    await _handle_text(update, None)
+    assert message.replies and "not connected" in message.replies[0]
