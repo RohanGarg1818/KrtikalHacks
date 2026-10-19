@@ -223,6 +223,8 @@ class AppSummary:
     listing_wide: bool
     last_checked: datetime | None = None
     failed: int = 0
+    not_listed: int = 0
+    simulated: bool = False
 
 
 async def compare_summary(session: AsyncSession, product_id: str) -> list[AppSummary]:
@@ -245,6 +247,11 @@ async def compare_summary(session: AsyncSession, product_id: str) -> list[AppSum
         )
         if app.last_checked is None or row.checked_at > app.last_checked:
             app.last_checked = row.checked_at
+        raw = row.raw or {}
+        if not str(raw.get("source", "")).startswith(("tinyfish_", "demo_cache")):
+            app.simulated = True
+        if raw.get("exact_match") is False:
+            app.not_listed += 1
         if row.status != "ok":
             app.failed += 1
             continue
@@ -265,11 +272,13 @@ def compare_text(product_name: str, apps: list[AppSummary]) -> str:
         label = APP_LABELS.get(app.platform, app.platform)
         if app.cheapest is None:
             stock = "out of stock" if app.total else "no data"
-            lines.append(f"• {label}: {stock}")
+            if app.total and app.not_listed == app.total:
+                stock = "exact pack not listed"
+            lines.append(f"• {label}: {stock}{' 🧪 simulated' if app.simulated else ''}")
             continue
         mark = " ⭐ cheapest" if app is best else ""
         scope = " (listing-wide)" if app.listing_wide else f" · {app.in_stock}/{app.total} pins in stock"
-        lines.append(f"• {label}: {_money(app.cheapest)}{scope}{mark}")
+        lines.append(f"• {label}: {_money(app.cheapest)}{scope}{mark}{' 🧪 simulated' if app.simulated else ''}")
     return "\n".join(lines)
 
 
@@ -287,13 +296,17 @@ def report_text(product_name: str, apps: list[AppSummary], now: datetime | None 
         if app.total == 0:
             lines.append(f"⚠️ {label}: last check failed · {when}")
             continue
+        if not app.in_stock and app.not_listed == app.total:
+            lines.append(f"⛔ {label}: exact pack not listed · {when}")
+            continue
         icon = "✅" if app.in_stock else "❌"
         if app.in_stock:
             state = "listing-wide" if app.listing_wide else f"{app.in_stock}/{app.total} pins in stock"
         else:
             state = "out of stock (listing-wide)" if app.listing_wide else "out of stock"
         parts = [_money(app.cheapest)] if app.cheapest is not None else []
-        lines.append(f"{icon} {label}: " + " · ".join([*parts, state, when]))
+        tail = [" 🧪 simulated"] if app.simulated else []
+        lines.append(f"{icon} {label}: " + " · ".join([*parts, state, when]) + "".join(tail))
     checked = [a.last_checked for a in apps if a.last_checked]
     lines.append(f"🕒 Last checked: {time_ago(max(checked), now) if checked else 'never'}")
     return "\n".join(lines)
@@ -659,6 +672,9 @@ def _result_line(row: CheckResult) -> str:
     label = APP_LABELS.get(row.platform, row.platform)
     if row.status != "ok":
         return f"⚠️ {label}: check failed ({(row.error or 'unknown error')[:80]})"
+    if (row.raw or {}).get("exact_match") is False:
+        notes = (row.raw or {}).get("notes") or []
+        return f"⛔ {label}: {notes[0] if notes else 'exact pack not listed'}"
     stock = "✅ in stock" if row.in_stock else ("❌ out of stock" if row.in_stock is False else "❔ unknown")
     eta = ""
     if row.eta_minutes is not None:

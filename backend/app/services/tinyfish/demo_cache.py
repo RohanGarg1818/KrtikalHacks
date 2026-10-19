@@ -88,6 +88,8 @@ async def cached_result(
             "cached_from": entry.get("run_id"),
             "captured_at": captured,
             "reason": reason,
+            "exact_match": entry.get("exact_match", True),
+            "notes": entry.get("notes") or [],
             "agent": trace.as_raw(),
         },
     )

@@ -1,6 +1,7 @@
 """Idempotently seed the local ShelfSense demo workspace.
 
 Run from backend/: ``python -m scripts.seed`` after ``alembic upgrade head``.
+Add ``--with-demo-data`` for simulated products and history (tests use it).
 Every entity is checked on its own, so re-running fills in whatever is missing
 (for example after the demo account was removed) and never duplicates rows.
 """
@@ -327,18 +328,28 @@ async def seed_alerts(
         )
 
 
-async def seed() -> None:
+async def seed(*, demo_data: bool = False) -> None:
+    """Pincodes and the demo account; invented products/history only on request.
+
+    ``demo_data=True`` adds the simulated products, price history and alerts
+    used by the automated tests. Real deployments leave it off so every price
+    on screen comes from a TinyFish check.
+    """
     async with SessionLocal() as session:
         new_pincodes = await seed_pincodes(session)
         user = await ensure_demo_user(session)
-        products, created = await seed_products(session, user)
-        await seed_alerts(session, user, products)
+        created = 0
+        if demo_data:
+            products, created = await seed_products(session, user)
+            await seed_alerts(session, user, products)
         await session.commit()
         print(
-            f"Seed complete: {new_pincodes} new pincodes, {created} new demo "
-            f"products for {user.name}."
+            f"Seed complete: {new_pincodes} new pincodes, account {user.name}"
+            + (f", {created} simulated demo products." if demo_data else ", no simulated data.")
         )
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    import sys
+
+    asyncio.run(seed(demo_data="--with-demo-data" in sys.argv))

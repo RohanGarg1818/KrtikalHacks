@@ -17,6 +17,7 @@ const METHOD: Record<NonNullable<RunResultRef["method"]>, { label: string; hint:
 
 function outcome(r: RunResultRef) {
   if (r.status !== "ok") return { label: "Failed", cls: "bg-linen border-dashed" };
+  if (r.exact_match === false) return { label: "Not listed", cls: "bg-linen border-dashed" };
   if (r.in_stock === true) return { label: "In stock", cls: "bg-sage text-ink" };
   if (r.in_stock === false) return { label: "Out of stock", cls: "bg-sand text-ink" };
   return { label: "Unknown", cls: "bg-linen" };

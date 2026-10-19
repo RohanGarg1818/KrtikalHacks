@@ -106,6 +106,9 @@ def parse_amazon(text: str, title: str | None) -> ListingSnapshot:
         snapshot.in_stock = True
     offer = _AMAZON_OFFER_RE.search(text)
     if offer:
+        # Amazon only shows a buy-box offer with a delivery date when it can be bought.
+        if snapshot.in_stock is None:
+            snapshot.in_stock = True
         snapshot.price = _amount(offer.group(1))
         snapshot.delivery_fee = 0.0 if offer.group(2) else _amount(offer.group(3))
         snapshot.delivery_date = _delivery_date(offer.group(4), offer.group(5))

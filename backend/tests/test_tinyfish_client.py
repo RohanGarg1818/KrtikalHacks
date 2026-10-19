@@ -229,3 +229,41 @@ async def test_app_status_endpoint_lists_every_app() -> None:
     apps = {row["platform"]: row for row in res.json()}
     assert set(apps) == {"blinkit", "zepto", "instamart", "amazon", "flipkart"}
     assert all(row["status"] in ("live", "cached", "unavailable", "simulated") for row in apps.values())
+
+
+def test_pack_size_matching_rejects_other_packs() -> None:
+    from app.services.tinyfish.pack import pack_label, same_pack
+    from app.services.tinyfish.tinyfish_client import not_listed_note
+
+    assert same_pack(QUERY, "Amul Taaza Pouch, 500 ml") is True
+    assert same_pack(QUERY, "Amul Taaza Toned Milk 0.5 L") is True
+    assert same_pack(QUERY, "Amul Taaza Homogenised Toned Milk (Tetra Pack) 200 ml") is False
+    assert same_pack(QUERY, "Amul Taaza Toned Milk 1 ltr") is False
+    assert same_pack(QUERY, "Amul Taaza 200ml x 2") is False
+    assert same_pack(QUERY, "Amul Taaza Toned Milk") is None  # name has no size: can't tell
+    assert pack_label("Haldiram's Bhujia 1Kg") == "1 kg"
+    note = not_listed_note(QUERY, "Amul Taaza Toned Milk 1 ltr", 77.0)
+    assert note.startswith("500 ml not listed") and "₹77" in note
+
+
+@pytest.mark.asyncio
+async def test_default_seed_adds_no_simulated_products() -> None:
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models.product import Product
+    from scripts.seed import seed
+
+    async with SessionLocal() as session:
+        before = await session.scalar(select(func.count(Product.id)))
+    await seed()  # real deployments: pincodes and account only
+    async with SessionLocal() as session:
+        assert await session.scalar(select(func.count(Product.id))) == before
+
+
+def test_amazon_offer_without_stock_text_counts_as_in_stock() -> None:
+    from app.services.tinyfish.marketplace import parse_amazon
+
+    text = "##### One-time purchase ₹56.00 ₹28.00 per g ₹60 delivery Friday, 20 November Ships from: X"
+    page = parse_amazon(text, "Haldiram's Delhi Bhujia, 200g : Amazon.in")
+    assert page.price == 56.0 and page.in_stock is True

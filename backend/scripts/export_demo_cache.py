@@ -63,6 +63,8 @@ async def export() -> int:
             "eta_minutes": row.eta_minutes,
             "screenshot": screenshot,
             "run_id": (row.raw or {}).get("run_id"),
+            "exact_match": (row.raw or {}).get("exact_match", True) is not False,
+            "notes": (row.raw or {}).get("notes") if isinstance((row.raw or {}).get("notes"), list) else [],
             "checked_at": row.checked_at.isoformat(),
         }
     CACHE_PATH.write_text(json.dumps(list(entries.values()), indent=2), encoding="utf-8")
