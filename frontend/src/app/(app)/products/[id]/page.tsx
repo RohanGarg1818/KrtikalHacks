@@ -113,7 +113,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
           </div>
         ) : k ? (
           <>
-            <KpiTile tone="slate" eyebrow="Your avg price" value={rupees(k.avg_price.value, 2)} spark={k.avg_price.sparkline} />
+            <KpiTile tone="linen" eyebrow="Your avg price" value={rupees(k.avg_price.value, 2)} spark={k.avg_price.sparkline} />
             <KpiTile tone="sand" eyebrow="Cheapest rival" value={rupees(k.cheapest_rival.value, 2)} spark={k.cheapest_rival.sparkline} />
             <KpiTile tone="sage" eyebrow="In stock" value={`${k.in_stock.value}/${k.in_stock.total}`} spark={k.in_stock.sparkline} caption="Pins in stock" />
             <KpiTile tone="linen" eyebrow="Rating" value={k.rating.value?.toFixed(2) ?? "—"} spark={k.rating.sparkline} />
@@ -155,7 +155,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
         </div>
 
         <div className="lg:col-span-5 lg:pt-[62px]">
-          <div className="card bg-ink text-linen border-linen p-[26px] flex flex-col gap-[10px]">
+          <div className="card text-ink p-[26px] flex flex-col gap-[10px]">
             <h2 className="font-sans font-semibold text-[18px] leading-[27px] flex items-center gap-2">
               <img src="/figma/heatmaps/imgContainer13.svg" alt="" width={15} height={15} /> AI summary
             </h2>
@@ -163,12 +163,12 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
               overview.data.summary ? (
                 <>
                   <p className="text-[15px] leading-[24.38px]">{overview.data.summary.summary_text}</p>
-                  <p className="text-[13px] text-linen/70">
+                  <p className="text-[13px] text-ink/75">
                     {overview.data.summary.source === "fallback" ? "Rule-based summary" : "Written by Gemini"} from measured data · {timeAgo(overview.data.summary.created_at)}
                   </p>
                 </>
               ) : (
-                <p className="text-[15px] leading-[24.38px] text-linen/80">No summary yet. Run a check or generate one.</p>
+                <p className="text-[15px] leading-[24.38px] text-ink/80">No summary yet. Run a check or generate one.</p>
               )
             ) : (
               <Skeleton className="h-24 opacity-20" />

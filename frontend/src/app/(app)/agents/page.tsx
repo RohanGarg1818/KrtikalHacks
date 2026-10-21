@@ -41,7 +41,7 @@ function UsageTiles({ usage }: { usage: TinyFishUsage }) {
       eyebrow: "Credits today",
       value: String(usage.credits_today),
       caption: budget == null ? "Unlimited daily budget" : `of ${budget} daily budget`,
-      tone: "bg-slate text-linen",
+      tone: "bg-linen text-ink",
       meter: budget == null ? null : pctUsed,
     },
     { eyebrow: "Runs today", value: String(usage.runs_today), caption: "Manual + scheduled", tone: "bg-sand text-ink", meter: null },
@@ -63,7 +63,7 @@ function UsageTiles({ usage }: { usage: TinyFishUsage }) {
           <div className="flex flex-col gap-2">
             <p className="text-[14px] font-semibold">{t.caption}</p>
             {t.meter != null && (
-              <span className="h-2 rounded-full bg-linen/25 overflow-hidden border border-linen/40" aria-hidden>
+              <span className="h-2 rounded-full bg-ink/15 overflow-hidden" aria-hidden>
                 <span className="block h-full bg-sand origin-left" style={{ transform: `scaleX(${t.meter})` }} />
               </span>
             )}
