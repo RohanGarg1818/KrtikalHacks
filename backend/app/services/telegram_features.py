@@ -33,6 +33,7 @@ from ..models.user import Subscription
 from .events import run_events
 from .plans import remaining_credits_today
 from .runner import create_run, schedule_run
+from .telegram import safe_answer
 
 logger = logging.getLogger("shelfsense.telegram")
 
@@ -404,18 +405,18 @@ async def handle_product_callback(update, context) -> bool:
     async with SessionLocal() as session:
         access = await _access(session, chat_id, product_id)
         if access is None:
-            await query.answer("This chat can't see that product.")
+            await safe_answer(query, "This chat can't see that product.")
             return True
         product, link = access
         if action == "r":
-            await query.answer()
+            await safe_answer(query)
             await query.message.reply_text(
                 report_text(product.name, await compare_summary(session, product.id)),
                 reply_markup=_keyboard([[("🔍 Check now", f"chk:p:{product.id}")]]),
             )
             return True
         if _group_blocked(update, link):
-            await query.answer("Only the person who connected this group can change alerts.")
+            await safe_answer(query, "Only the person who connected this group can change alerts.")
             return True
         existing = await session.scalar(
             select(TelegramLink).where(
@@ -435,7 +436,7 @@ async def handle_product_callback(update, context) -> bool:
             )
             with contextlib.suppress(IntegrityError):
                 await session.commit()
-            await query.answer("Alerts on")
+            await safe_answer(query, "Alerts on")
             await query.message.reply_text(f"🔔 Alerts on for {product.name}.")
         elif action == "u" and existing is not None:
             remaining = await session.scalar(
@@ -444,14 +445,14 @@ async def handle_product_callback(update, context) -> bool:
                 ).limit(1)
             )
             if remaining is None:
-                await query.answer("Keep at least one product, or use /stop to disconnect.")
+                await safe_answer(query, "Keep at least one product, or use /stop to disconnect.")
                 return True
             await session.delete(existing)
             await session.commit()
-            await query.answer("Alerts off")
+            await safe_answer(query, "Alerts off")
             await query.message.reply_text(f"🔕 Alerts off for {product.name}.")
         else:
-            await query.answer("Already set.")
+            await safe_answer(query, "Already set.")
     return True
 
 
@@ -540,22 +541,22 @@ async def handle_check_callback(update, context) -> bool:
     action, product_id = parts[1], parts[2] if len(parts) > 2 else ""
     chat_id = str(chat.id)
     if action == "x":
-        await query.answer("Cancelled")
+        await safe_answer(query, "Cancelled")
         await query.edit_message_text("Check cancelled. Nothing was run.")
         return True
     async with SessionLocal() as session:
         access = await _access(session, chat_id, product_id)
         if access is None:
-            await query.answer("This chat is not linked to that product.")
+            await safe_answer(query, "This chat is not linked to that product.")
             return True
         product, link = access
         if action == "p":
-            await query.answer()
+            await safe_answer(query)
             await _ask_app(query.message, product, edit=True)
             return True
         choice = parts[3] if len(parts) > 3 else ""
         if choice != "all" and choice not in live_apps():
-            await query.answer("That app can't be checked live right now.")
+            await safe_answer(query, "That app can't be checked live right now.")
             return True
         platforms = _platforms_for(choice)
         label = "all apps" if choice == "all" else APP_LABELS[choice]
@@ -569,14 +570,14 @@ async def handle_check_callback(update, context) -> bool:
                 [(f"{pin} · {areas.get(pin, '')}".strip(" ·")[:30], f"chk:c:{product_id}:{choice}:{pin}")]
                 for pin in pins
             ] or [[("Cancel", "chk:x")]]
-            await query.answer()
+            await safe_answer(query)
             await query.edit_message_text(
                 f"🔍 {product.name} on {label}\nWhich pincode?", reply_markup=_keyboard(rows)
             )
             return True
         pincode = parts[4] if len(parts) > 4 else ""
         if action == "c":
-            await query.answer()
+            await safe_answer(query)
             await query.edit_message_text(
                 f"Run a live check?\n\n{product.name}\n{label} · {pincode}\n\n{_cost_note(platforms)}",
                 reply_markup=_keyboard(
@@ -587,12 +588,12 @@ async def handle_check_callback(update, context) -> bool:
         if action != "r":
             return False
         if _group_blocked(update, link):
-            await query.answer("Only the person who connected this group can run checks.")
+            await safe_answer(query, "Only the person who connected this group can run checks.")
             return True
         plan = await session.scalar(select(Subscription.plan).where(Subscription.user_id == product.user_id)) or "free"
         remaining = await remaining_credits_today(session, product.user_id, plan)
         if remaining is not None and remaining < 1:
-            await query.answer("No credits left today.")
+            await safe_answer(query, "No credits left today.")
             return True
         # Make the apps part of the product's selection so the heatmap shows them.
         for platform in platforms:
@@ -606,18 +607,18 @@ async def handle_check_callback(update, context) -> bool:
             )
         except HTTPException as exc:
             detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
-            await query.answer()
+            await safe_answer(query)
             await query.edit_message_text(f"Could not start the check: {detail}")
             return True
         except Exception:
             logger.exception("telegram check failed to start product=%s", product_id)
-            await query.answer()
+            await safe_answer(query)
             await query.edit_message_text(
                 "A check is already running for this product. Try again when it finishes."
             )
             return True
         schedule_run(run.id, product_id=product.id, user_id=product.user_id, jobs=jobs)
-    await query.answer("Check started")
+    await safe_answer(query, "Check started")
     await query.edit_message_text(f"⏳ Checking {product.name} on {label} · {pincode}…")
     task = asyncio.create_task(_follow_check(query.message, run.id, product.name, label, pincode))
     _watchers.add(task)

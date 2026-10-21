@@ -244,6 +244,20 @@ async def chat_links(session: AsyncSession, chat_id: str) -> list[TelegramLink]:
     )
 
 
+async def safe_answer(query, text: str | None = None) -> None:
+    """Acknowledge a button tap; taps queued while the bot was offline are too old
+    for Telegram to accept, so skip the acknowledgement and still do the action."""
+    try:
+        await query.answer(text) if text else await query.answer()
+    except Exception as exc:  # noqa: BLE001 - telegram.error.BadRequest for stale taps
+        logger.info("could not acknowledge button tap (%s); continuing", exc)
+
+
+async def _on_error(update, context) -> None:
+    """One log line per failed update instead of an unhandled traceback."""
+    logger.warning("telegram update failed: %s", context.error, exc_info=context.error)
+
+
 def get_bot_application():
     return _bot_application
 
@@ -313,7 +327,7 @@ async def handle_approve_callback(update, context) -> bool:
     async with SessionLocal() as session:
         recommendation = await session.get(Recommendation, recommendation_id)
         if recommendation is None:
-            await query.answer("Recommendation no longer exists.")
+            await safe_answer(query, "Recommendation no longer exists.")
             return True
         link = await session.scalar(
             select(TelegramLink).where(
@@ -322,17 +336,17 @@ async def handle_approve_callback(update, context) -> bool:
             )
         )
         if link is None:
-            await query.answer("This chat is not linked to that product.")
+            await safe_answer(query, "This chat is not linked to that product.")
             return True
         if chat.type in GROUP_CHAT_TYPES:
             actor = update.effective_user
             if actor is None or str(actor.id) != link.linked_by_telegram_user_id:
-                await query.answer(
+                await safe_answer(query, 
                     "Only the person who connected this group can approve."
                 )
                 return True
         if recommendation.status != "pending":
-            await query.answer(f"Already {recommendation.status}.")
+            await safe_answer(query, f"Already {recommendation.status}.")
             await query.edit_message_text(
                 f"{recommendation.action_text}\n\nStatus: {recommendation.status}."
             )
@@ -342,10 +356,10 @@ async def handle_approve_callback(update, context) -> bool:
                 session, recommendation, decision="approved", decided_via="telegram"
             )
         except HTTPException as exc:
-            await query.answer(str(exc.detail)[:200])
+            await safe_answer(query, str(exc.detail)[:200])
             return True
         await query.edit_message_text(f"{recommendation.action_text}\n\nApproved ✓")
-        await query.answer("Recommendation approved.")
+        await safe_answer(query, "Recommendation approved.")
     return True
 
 
@@ -560,7 +574,7 @@ async def _handle_callback(update, context) -> None:
     query = update.callback_query
     data = (query.data or "") if query is not None else ""
     if data.startswith("menu:"):
-        await query.answer()
+        await safe_answer(query)
         action = data.split(":", 1)[1]
         if action == "status":
             await _handle_status(update, context)
@@ -613,6 +627,7 @@ async def start_bot() -> bool:
             )
         )
         application.add_handler(CallbackQueryHandler(_handle_callback))
+        application.add_error_handler(_on_error)
         await application.initialize()
         from .telegram_features import configure_bot_profile
 
