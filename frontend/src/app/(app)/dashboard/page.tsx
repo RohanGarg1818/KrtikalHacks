@@ -75,16 +75,16 @@ export default function DashboardPage() {
 
       {/* Stat tiles */}
       <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
-        <div className="card bg-ink text-linen flex flex-col justify-between p-[26px] min-h-[200px]">
+        <div className="card text-ink flex flex-col justify-between p-[26px] min-h-[200px]">
           <div className="flex items-center justify-between">
-            <p className="eyebrow text-sand">{me.data?.plan ?? "…"}</p>
-            <p className="text-[14px] font-semibold text-linen/90">Test-mode billing</p>
+            <p className="eyebrow">{me.data?.plan ?? "…"}</p>
+            <p className="text-[14px] font-semibold text-ink/75">Test-mode billing</p>
           </div>
           {me.data && limits ? (
             <div className="flex flex-col gap-[10px]">
-              <Meter dark label="Products" value={me.data.usage.products} max={limits.products} />
-              <Meter dark label="Pincodes" value={me.data.usage.pincodes} max={limits.pincodes} />
-              <Meter dark label="Checks" value={me.data.usage.checks_this_week} max={limits.daily_credit_budget ? limits.daily_credit_budget * 7 : null} />
+              <Meter label="Products" value={me.data.usage.products} max={limits.products} />
+              <Meter label="Pincodes" value={me.data.usage.pincodes} max={limits.pincodes} />
+              <Meter label="Checks" value={me.data.usage.checks_this_week} max={limits.daily_credit_budget ? limits.daily_credit_budget * 7 : null} />
             </div>
           ) : (
             <Skeleton className="h-24 opacity-20" />
@@ -102,7 +102,7 @@ export default function DashboardPage() {
           value={products.data ? `${cheaper}/${all.length}` : "…"}
           caption={`Price lead on ${cheaper} product${cheaper === 1 ? "" : "s"}`}
         />
-        <StatTile tone="slate" eyebrow="Approved this week" value={dash.data ? tile("approved_this_week") : "…"} caption="Actions this week" />
+        <StatTile tone="linen" eyebrow="Approved this week" value={dash.data ? tile("approved_this_week") : "…"} caption="Actions this week" />
       </section>
 
       {/* Products */}
@@ -163,23 +163,23 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-        <div className="lg:col-span-5 card bg-slate text-linen p-[26px] flex flex-col gap-2">
-          <h2 className="text-[28px] tracking-[-0.56px] border-b border-linen/30 pb-[13px]">Today&apos;s alerts</h2>
+        <div className="lg:col-span-5 card text-ink p-[26px] flex flex-col gap-2">
+          <h2 className="text-[28px] tracking-[-0.56px] border-b border-ink/15 pb-[13px]">Today&apos;s alerts</h2>
           {!dash.data ? (
             <Skeleton className="h-40 opacity-30" />
           ) : dash.data.alerts.length === 0 ? (
-            <p className="text-[15px] text-linen/80 py-4">No alerts today. Quiet shelf.</p>
+            <p className="text-[15px] text-ink/75 py-4">No alerts today. Quiet shelf.</p>
           ) : (
             <ul className="flex flex-col stagger">
               {dash.data.alerts.slice(0, 4).map((a, i, arr) => (
-                <li key={a.id} className={`flex items-center justify-between gap-3 py-4 ${i < arr.length - 1 ? "border-b border-linen/30" : ""}`}>
+                <li key={a.id} className={`flex items-center justify-between gap-3 py-4 ${i < arr.length - 1 ? "border-b border-ink/15" : ""}`}>
                   <div className="flex items-center gap-3 min-w-0">
                     <span className="grid place-items-center size-9 shrink-0 rounded-[10px] bg-sand border-2 border-ink shadow-[3px_3px_0_var(--ink)]">
                       <img src={`/figma/shell/${ALERT_ICON[a.kind] ?? "alert-bot"}.svg`} alt="" width={16} height={16} />
                     </span>
                     <div className="min-w-0">
                       <p className="font-semibold text-[16px] leading-6">{a.message}</p>
-                      <p className="text-[14px] text-linen/80">
+                      <p className="text-[14px] text-ink/75">
                         {timeAgo(a.created_at)} · {a.product_name}
                       </p>
                     </div>
