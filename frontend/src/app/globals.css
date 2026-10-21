@@ -2,12 +2,15 @@
 
 /* Holst palette — exact values from the Figma file. */
 :root {
-  --ink: #0d1b2a;
-  --deep: #1b263b;
-  --slate: #415a77;
-  --sage: #778d7a;
-  --sand: #d4c4a8;
-  --linen: #f4f1de;
+  --ink: #111111;
+  --deep: #232323;
+  --slate: #6c4bff;
+  --sage: #8ce8b0;
+  --sand: #ffd84d;
+  --linen: #fff8ec;
+  --pink: #ff9ec7;
+  --sky: #8fd3ff;
+  --orange: #ff8a3d;
 }
 
 @theme inline {
@@ -17,14 +20,14 @@
   --color-sage: var(--sage);
   --color-sand: var(--sand);
   --color-linen: var(--linen);
-  --font-serif: var(--font-fraunces);
-  --font-sans: var(--font-inter);
+  --font-serif: var(--font-display);
+  --font-sans: var(--font-body);
 }
 
 body {
   background: var(--linen);
   color: var(--ink);
-  font-family: var(--font-inter), system-ui, sans-serif;
+  font-family: var(--font-body), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -57,13 +60,13 @@ body {
 
 @layer base {
   h1, h2, h3 {
-    font-family: var(--font-fraunces), Georgia, serif;
+    font-family: var(--font-display), Georgia, serif;
     font-weight: 600;
     font-variation-settings: "SOFT" 0, "WONK" 1;
   }
 }
 .font-display {
-  font-family: var(--font-fraunces), Georgia, serif;
+  font-family: var(--font-display), Georgia, serif;
   font-weight: 600;
   font-variation-settings: "SOFT" 0, "WONK" 1;
 }
@@ -266,7 +269,7 @@ body {
 .ss-pin.stale, .ss-pin.not_tracked, .ss-pin.failed { background: var(--linen); opacity: 0.45; }
 .ss-pin.selected { outline: 3px solid var(--slate); outline-offset: 3px; }
 .leaflet-div-icon { background: transparent !important; border: none !important; }
-.leaflet-container { font-family: var(--font-inter), sans-serif; background: var(--linen); }
+.leaflet-container { font-family: var(--font-body), sans-serif; background: var(--linen); }
 .leaflet-tile-pane { filter: grayscale(1) sepia(0.35) contrast(0.85) brightness(1.08); }
 .leaflet-control-zoom a {
   border: 2px solid var(--ink) !important;
@@ -319,4 +322,78 @@ body {
   /* Loaders go static so nothing flickers: the spinner reads as a half ring, the live dot solid. */
   .ss-spin { animation: none !important; border-right-color: var(--ink); }
   .ss-live-dot { animation: none !important; }
+}
+
+
+/* ===================================================================
+   Sticker refresh: candy colours, black marker outlines, pill buttons,
+   hard offset shadows, floating doodles and playful motion.
+   =================================================================== */
+@layer components {
+  .card { border-width: 3px; border-radius: 24px; box-shadow: 4px 4px 0 var(--ink); }
+  .btn {
+    border-width: 3px; border-radius: 9999px; box-shadow: 4px 4px 0 var(--ink);
+    transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+  }
+  .btn:hover:not(:disabled) { animation: ss-wiggle 300ms ease-in-out; }
+  .btn:active:not(:disabled) { transform: translate(4px, 4px); box-shadow: 0 0 0 var(--ink); }
+  .pill, .chip { border-width: 3px; border-radius: 9999px; }
+  .eyebrow, .label { letter-spacing: 1.4px; font-weight: 800; }
+  a.card, li.card, .card.lift {
+    transition: transform 200ms ease-out, box-shadow 200ms ease-out;
+  }
+  a.card:hover, li.card:hover, .card.lift:hover {
+    transform: translateY(-8px) rotate(2deg);
+    box-shadow: 8px 8px 0 var(--ink);
+  }
+}
+
+/* Headings: extra-bold and tight; italic words stay chunky. */
+h1, h2, h3, .font-serif { font-weight: 800; letter-spacing: -0.02em; }
+:is(h1, h2, h3) .font-serif, :is(h1, h2, h3) .italic { font-weight: 800; }
+.ss-pin.in_stock { color: var(--ink); }
+
+/* Header slides down on load. */
+.ss-header-in { animation: ss-header 400ms ease-out both; }
+@keyframes ss-header { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Hero words rise 24px and fade in, staggered inline (80ms per word). */
+.ss-word { display: inline-block; animation: ss-rise 600ms ease-out both; white-space: pre; }
+@keyframes ss-rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Floating doodles: bob 8–12px and rotate ±6°, out of sync. */
+.ss-float { animation: ss-float var(--float-dur, 4s) ease-in-out var(--float-delay, 0s) infinite; }
+@keyframes ss-float {
+  0%, 100% { transform: translateY(0) rotate(-6deg); }
+  50% { transform: translateY(-10px) rotate(6deg); }
+}
+
+/* Mascot: 6px bounce (1.2s); waving arm ±15°; walking legs. */
+.ss-bounce { animation: ss-bounce 1.2s ease-in-out infinite; }
+@keyframes ss-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.ss-wave { animation: ss-wave 1.2s ease-in-out infinite; }
+@keyframes ss-wave { 0%, 100% { transform: rotate(-15deg); } 50% { transform: rotate(15deg); } }
+.ss-walk { animation: ss-wave 0.6s ease-in-out infinite; transform-origin: 60px 112px; }
+
+/* Button wiggle. */
+@keyframes ss-wiggle { 0%, 100% { rotate: 0deg; } 25% { rotate: -3deg; } 75% { rotate: 3deg; } }
+
+/* Scroll reveals: rise 40px over 600ms, children staggered 100ms. */
+.ss-reveal { opacity: 0; transform: translateY(40px); transition: opacity 600ms ease-out, transform 600ms ease-out; }
+.ss-reveal.ss-in { opacity: 1; transform: none; }
+.ss-reveal > * { transition: opacity 600ms ease-out, transform 600ms ease-out; }
+.ss-reveal:not(.ss-in) > * { opacity: 0; transform: translateY(40px); }
+.ss-reveal.ss-in > *:nth-child(2) { transition-delay: 100ms; }
+.ss-reveal.ss-in > *:nth-child(3) { transition-delay: 200ms; }
+.ss-reveal.ss-in > *:nth-child(4) { transition-delay: 300ms; }
+.ss-reveal.ss-in > *:nth-child(5) { transition-delay: 400ms; }
+.ss-reveal.ss-in > *:nth-child(n + 6) { transition-delay: 500ms; }
+
+/* Marquee pauses on hover. */
+.ss-marquee:hover > * { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ss-float, .ss-bounce, .ss-wave, .ss-walk, .ss-word, .ss-header-in, .btn:hover { animation: none !important; }
+  .ss-reveal, .ss-reveal > * { opacity: 1 !important; transform: none !important; transition: none !important; }
+  a.card:hover, li.card:hover, .card.lift:hover { transform: none; }
 }

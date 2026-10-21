@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Mascot } from "@/components/brand/Doodles";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, errorMessage, useApi } from "@/lib/api";
@@ -365,7 +366,7 @@ function TopBar({ me, onMenu, menuOpen, menuButton }: { me?: Me; onMenu: () => v
   const connected = products?.filter((p) => p.telegram_connected).length ?? 0;
   const total = products?.length ?? 0;
   return (
-    <header className="sticky top-0 z-[1000] bg-linen border-b-2 border-ink h-[72px] px-4 lg:px-10 flex items-center justify-between gap-3 sm:gap-4">
+    <header className="ss-header-in sticky top-0 z-[1000] bg-linen border-b-[3px] border-ink h-[72px] px-4 lg:px-10 flex items-center justify-between gap-3 sm:gap-4">
       <div className="flex items-center gap-3 min-w-0">
         <button
           ref={menuButton}
@@ -502,6 +503,7 @@ function Shell({ children }: { children: ReactNode }) {
       <div className="flex-1 min-w-0 flex flex-col bg-linen">
         <TopBar me={me} onMenu={() => setMenu(true)} menuOpen={menu} menuButton={menuButton} />
         <ModeBanner health={health} />
+        <Mascot pose="peek" className="pointer-events-none fixed -bottom-12 right-2 z-[5] w-16 hidden xl:block" />
         <main id="main" tabIndex={-1} className="flex-1 w-full max-w-[1180px] px-4 sm:px-6 lg:px-10 pt-10 pb-16 outline-none">
           {children}
         </main>

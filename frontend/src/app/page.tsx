@@ -1,5 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
+import { Doodle, Mascot } from "@/components/brand/Doodles";
+import Words from "@/components/brand/Words";
 import type { ReactNode } from "react";
 
 // Marketing homepage — Figma frame 8:943 ("homepage"). Static page: the numbers
@@ -38,7 +40,7 @@ const NAV = [
 
 function Navbar() {
   return (
-    <header className="sticky top-0 z-50 bg-linen border-b-2 border-ink">
+    <header className="ss-header-in sticky top-0 z-50 bg-linen border-b-[3px] border-ink">
       <div className={`${WRAP} h-[80px] flex items-center justify-between gap-4`}>
         <Link href="/" className="flex items-center gap-3 shrink-0" aria-label="ShelfSense home">
           <span className="grid place-items-center size-10 rounded-[10px] border-2 border-ink bg-sand shadow-[3px_3px_0_var(--ink)]">
@@ -147,18 +149,18 @@ function Hero() {
             Pricing &amp; shelf intelligence
           </span>
           <h1 className="mt-6 text-linen text-[44px] leading-[48px] min-[400px]:text-[48px] min-[400px]:leading-[52px] sm:text-[80px] sm:leading-[80px] xl:text-[104px] xl:leading-[104px] tracking-[-0.025em]">
-            See your market
-            <span className={`block ${SERIF} italic font-normal text-sand`}>the way shoppers</span>
-            <span className={`block ${SERIF} italic font-normal text-sand`}>do.</span>
+            <Words text="See your market" />
+            <span className={`block ${SERIF} italic font-normal text-sand`}><Words text="the way shoppers" start={3} /></span>
+            <span className={`block ${SERIF} italic font-normal text-sand`}><Words text="do." start={6} /></span>
           </h1>
           <p className="mt-6 max-w-[560px] text-linen text-[18px] leading-[29px] sm:text-[20px] sm:leading-[32.5px] font-medium">
             ShelfSense watches your competitors and your stock in every pincode, then tells you exactly how to win, without a price war.
           </p>
           <div className="mt-8 flex flex-wrap gap-4">
-            <Link href="/dashboard" className={`flex items-center gap-2 h-14 px-[34px] rounded-[20px] border-2 border-ink bg-sand text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
+            <Link href="/dashboard" className={`flex items-center gap-2 h-14 px-[34px] rounded-full border-2 border-ink bg-sand text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
               Map my product <Icon name="heroArrow" w={13.33} h={13.33} />
             </Link>
-            <a href="#how" className={`flex items-center h-14 px-[34px] rounded-[20px] border-2 border-ink bg-linen text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
+            <a href="#how" className={`flex items-center h-14 px-[34px] rounded-full border-2 border-ink bg-linen text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
               See how it works
             </a>
           </div>
@@ -171,7 +173,7 @@ function Hero() {
             ))}
           </div>
         </div>
-        <div className="lg:col-span-5"><LiveMesh /></div>
+        <div className="lg:col-span-5 relative"><LiveMesh /><Mascot pose="wave" className="absolute -bottom-24 right-2 w-20 sm:w-24 drop-shadow-[3px_3px_0_var(--ink)]" /></div>
       </div>
     </section>
   );
@@ -182,12 +184,23 @@ function Hero() {
 const TICKER = "In stock ✓ · Out of stock ✕ · Price gap ₹ · 110017 · 110016 · 110048 · 560038 · 560001 · 560102 · Live pincode intelligence · ";
 
 function Marquee() {
+  const phrases = TICKER.split(" · ").filter(Boolean);
+  const marks = ["star", "heart", "squiggle", "burst", "leaf", "note", "moon", "face", "glass"] as const;
   const copy = (hidden?: boolean) => (
-    <span aria-hidden={hidden} className="shrink-0 whitespace-pre pr-0">{TICKER.repeat(3)}</span>
+    <span aria-hidden={hidden} className="shrink-0 flex items-center whitespace-pre">
+      {[0, 1, 2].flatMap((r) =>
+        phrases.map((p, i) => (
+          <span key={`${r}-${i}`} className="flex items-center">
+            {p}
+            <Doodle name={marks[(r * phrases.length + i) % marks.length]} fill="#ffd84d" className="mx-4 size-5 text-sand" />
+          </span>
+        )),
+      )}
+    </span>
   );
   return (
-    <div className="bg-ink border-b-2 border-ink pt-3 pb-[14px] overflow-hidden">
-      <div className="flex w-max animate-[marquee_45s_linear_infinite] motion-reduce:animate-none text-sand text-[14px] leading-[20px] font-extrabold tracking-[1.4px] uppercase">
+    <div className="ss-marquee bg-ink border-b-[3px] border-ink pt-3 pb-[14px] overflow-hidden">
+      <div className="flex w-max animate-[marquee_25s_linear_infinite] motion-reduce:animate-none text-sand text-[14px] leading-[20px] font-extrabold tracking-[1.4px] uppercase">
         {copy()}
         {copy(true)}
       </div>
@@ -827,6 +840,7 @@ export default function Home() {
         <Pricing />
         <Closing />
       </main>
+      <div className="relative h-0" aria-hidden><Mascot pose="walk" className="absolute -top-[118px] right-[8%] w-24 drop-shadow-[3px_3px_0_var(--ink)]" /></div>
       <Footer />
     </div>
   );
