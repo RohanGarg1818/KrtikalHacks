@@ -17,7 +17,7 @@
   --color-sage: var(--sage);
   --color-sand: var(--sand);
   --color-linen: var(--linen);
-  --font-serif: var(--font-fraunces);
+  --font-serif: var(--font-inter);
   --font-sans: var(--font-inter);
 }
 
@@ -319,4 +319,162 @@ body {
   /* Loaders go static so nothing flickers: the spinner reads as a half ring, the live dot solid. */
   .ss-spin { animation: none !important; border-right-color: var(--ink); }
   .ss-live-dot { animation: none !important; }
+}
+
+/* =====================================================================
+   Premium refresh. Unlayered, so it overrides the component layer and
+   Tailwind utilities: soft layered depth instead of hard offset shadows,
+   hairline borders instead of 2px ink outlines, Inter display type.
+   ===================================================================== */
+:root {
+  --ink: #0d1b2a;
+  --deep: #142036;
+  --slate: #243b5e;
+  --sage: #5f8a6b;
+  --sand: #eee5d3;
+  --linen: #fcfbf8;
+  --canvas: #f4f3ef;
+  --surface: #ffffff;
+  --line: rgba(13, 27, 42, 0.08);
+  --line-strong: rgba(13, 27, 42, 0.14);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --shadow-xs: 0 1px 2px rgba(13, 27, 42, 0.06);
+  --shadow-sm: 0 1px 2px rgba(13, 27, 42, 0.04), 0 2px 8px -2px rgba(13, 27, 42, 0.06);
+  --shadow-md: 0 1px 2px rgba(13, 27, 42, 0.04), 0 8px 24px -8px rgba(13, 27, 42, 0.12);
+  --shadow-lg: 0 2px 4px rgba(13, 27, 42, 0.04), 0 24px 48px -16px rgba(13, 27, 42, 0.18);
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(61, 90, 128, 0.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, rgba(95, 138, 107, 0.06), transparent 60%),
+    var(--canvas);
+  background-attachment: fixed;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  letter-spacing: -0.006em;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: rgba(61, 90, 128, 0.18); }
+
+/* Type: one confident sans, tight display tracking. */
+h1, h2, h3, .font-display, .font-serif {
+  font-family: var(--font-inter), system-ui, sans-serif !important;
+  font-variation-settings: normal !important;
+  font-weight: 650;
+  letter-spacing: -0.028em;
+}
+h1 { letter-spacing: -0.035em; }
+
+/* Hard offset shadows become soft layered depth. */
+[class*="_0_var(--ink)]"], [class*="_0_rgba(0,0,0"] { box-shadow: var(--shadow-md); }
+
+/* 2px ink outlines become hairlines. */
+.border-2 { border-width: 1px; }
+.border-t-2 { border-top-width: 1px; }
+.border-b-2 { border-bottom-width: 1px; }
+.border-r-2 { border-right-width: 1px; }
+.border-\[1\.5px\] { border-width: 1px; }
+.border-ink { border-color: var(--line-strong); }
+.border-dashed.border-ink { border-color: rgba(13, 27, 42, 0.35); }
+
+/* Interaction: gentle lift on hover, settle on press. */
+.press {
+  box-shadow: var(--shadow-sm);
+  transition: transform 220ms var(--ease), box-shadow 220ms var(--ease), background-color 180ms ease, border-color 180ms ease;
+}
+@media (hover: hover) {
+  .press:hover:not(:disabled, [aria-disabled="true"]) {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+  }
+}
+.press:active:not(:disabled, [aria-disabled="true"]) {
+  transform: translateY(0) scale(0.985);
+  box-shadow: var(--shadow-xs);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 11px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.btn-sm { padding: 7px 14px; font-size: 13.5px; border-radius: 9px; }
+.btn-primary, .btn-ink {
+  background: var(--ink);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(13, 27, 42, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+@media (hover: hover) {
+  .btn-primary:hover:not(:disabled), .btn-ink:hover:not(:disabled) { background: #1c2c44; }
+}
+.btn-ghost { background: var(--surface); color: var(--ink); border-color: var(--line-strong); }
+.btn-sand { background: var(--sand); color: var(--ink); border-color: rgba(13, 27, 42, 0.06); }
+.btn-sage { background: var(--sage); color: #fff; }
+
+.pill {
+  border: 1px solid var(--line-strong);
+  border-radius: 9999px;
+  padding: 7px 16px;
+  font-size: 13.5px;
+  background: var(--surface);
+}
+.pill[data-active="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+.input {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 11px 14px;
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 180ms ease, border-color 180ms ease;
+}
+.input:focus { border-color: var(--slate); box-shadow: 0 0 0 4px rgba(61, 90, 128, 0.16); }
+
+.sticker {
+  transform: none;
+  border: 1px solid rgba(13, 27, 42, 0.08);
+  border-radius: 9999px;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  box-shadow: none;
+}
+.chip { border: 1px solid var(--line-strong); font-weight: 550; }
+.eyebrow, .label { letter-spacing: 0.08em; font-weight: 600; }
+.eyebrow { font-size: 12px; color: var(--slate); }
+.section-head { border-bottom: 1px solid var(--line); }
+.tab::after { height: 2px; background: var(--ink); bottom: -6px; }
+.tab[data-active="true"] { color: var(--ink); }
+.skeleton { background: #ecebe6; }
+
+/* Map pins: white ring + soft drop, status colour stays the signal. */
+.ss-pin {
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(13, 27, 42, 0.28);
+  font-size: 12px;
+}
+.ss-pin.in_stock { color: #fff; }
+.ss-pin.out_of_stock { background: #fff; border: 1.5px dashed var(--ink); box-shadow: 0 2px 8px rgba(13, 27, 42, 0.18); }
+.ss-pin.selected { outline: 2px solid var(--ink); outline-offset: 3px; }
+.leaflet-tile-pane { filter: grayscale(1) contrast(0.92) brightness(1.06); }
+.leaflet-control-zoom a {
+  border: 1px solid var(--line-strong) !important;
+  background: var(--surface) !important;
+  box-shadow: var(--shadow-sm);
+}
+
+:where(a, button, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--slate);
+  outline-offset: 2px;
 }
