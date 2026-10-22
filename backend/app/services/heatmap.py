@@ -7,6 +7,9 @@ Status rules (applied per platform cell, worst cell wins for a pin row):
   price_gap     in stock AND seller price >= 1.05 * cheapest in-stock rival
                 (rival prices older than the 24h freshness window are ignored)
   in_stock      otherwise
+In live mode, apps outside TINYFISH_LIVE_PLATFORMS (Blinkit by default) are
+never checked: their stale cells get ``stale_reason == "unavailable"`` and are
+ignored when picking a pin's worst cell, unless no other app is selected.
 Hot zone: >= 3 out_of_stock pincodes within 3 km (haversine) -> cluster centre.
 Snapshots (6h/24h/7d) use the latest result at or before (now - offset);
 history older than 14 days before the snapshot is never scanned.
@@ -22,9 +25,12 @@ from typing import TypeVar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..models.checks import CheckResult
 from ..models.product import Competitor, Pincode, ProductPincode
 from ..utils.geo import haversine_km
+from .storage import screenshot_url_for
+from .tinyfish.availability import skipped_platforms, unavailable_reason
 
 SNAPSHOT_OFFSETS: dict[str, timedelta] = {
     "now": timedelta(0),
@@ -38,6 +44,7 @@ PRICE_GAP_RATIO = 1.05
 HOT_ZONE_RADIUS_KM = 3.0
 HOT_ZONE_MIN_PINS = 3
 STATUS_RANK = {"out_of_stock": 0, "price_gap": 1, "stale": 2, "in_stock": 3}
+UNAVAILABLE_REASON = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -243,11 +250,13 @@ async def compute_heatmap(
             "price_gap": 0,
             "stale": 0,
             "failed": 0,
+            "unavailable": 0,
             "total": 0,
         },
         "hot_zones": [],
         "platform": platform,
         "snapshot": snapshot,
+        "unavailable_platforms": [],
     }
     if not pincodes:
         return empty
@@ -270,6 +279,7 @@ async def compute_heatmap(
         ).all()
     }
 
+    unavailable = set(skipped_platforms(get_settings(), platforms))
     pins: list[dict] = []
     for pincode in pincodes:
         cells: list[tuple[str, dict]] = []
@@ -284,12 +294,18 @@ async def compute_heatmap(
                 rival_price=rival_price,
                 cutoff=cutoff,
             )
+            # Live mode never checks this app: its cell is "not available",
+            # not "stale", and must not drag the pin's aggregate status down.
+            never_checked = status == "stale" and cell_platform in unavailable
             cells.append(
                 (
                     cell_platform,
                     {
                         "status": status,
-                        "stale_reason": stale_reason(
+                        "never_checked": never_checked,
+                        "stale_reason": UNAVAILABLE_REASON
+                        if never_checked
+                        else stale_reason(
                             seller.status if seller else None,
                             seller.checked_at if seller else None,
                             cutoff,
@@ -304,8 +320,9 @@ async def compute_heatmap(
                     },
                 )
             )
-        cells.sort(key=lambda item: (STATUS_RANK[item[1]["status"]], item[0]))
-        chosen_platform, chosen = cells[0]
+        checkable = [cell for cell in cells if not cell[1]["never_checked"]] or cells
+        checkable.sort(key=lambda item: (STATUS_RANK[item[1]["status"]], item[0]))
+        chosen_platform, chosen = checkable[0]
         pin = geo.get(pincode)
         pins.append(
             {
@@ -330,11 +347,16 @@ async def compute_heatmap(
         "price_gap": 0,
         "stale": 0,
         "failed": 0,
+        "unavailable": 0,
         "total": 0,
     }
     for pin in pins:
-        summary[pin["status"]] += 1
         summary["total"] += 1
+        if pin["stale_reason"] == UNAVAILABLE_REASON:
+            # Grey on the map like stale, but counted apart: re-checking won't help.
+            summary["unavailable"] += 1
+            continue
+        summary[pin["status"]] += 1
         if pin["stale_reason"] == "failed":
             summary["failed"] += 1
     hot_zone_points = [
@@ -348,7 +370,15 @@ async def compute_heatmap(
         "hot_zones": find_hot_zones(hot_zone_points),
         "platform": platform,
         "snapshot": snapshot,
+        "unavailable_platforms": unavailable_platform_notes(unavailable),
     }
+
+
+def unavailable_platform_notes(platforms: set[str]) -> list[dict]:
+    return [
+        {"platform": item, "reason": unavailable_reason(item)}
+        for item in sorted(platforms)
+    ]
 
 
 async def compute_pin_detail(
@@ -403,9 +433,13 @@ async def compute_pin_detail(
                 "rating": row.rating,
                 "status": row.status,
                 "checked_at": row.checked_at,
+                "result_id": row.id,
+                "run_id": row.run_id,
             }
         )
 
+    settings = get_settings()
+    unavailable = set(skipped_platforms(settings, platforms))
     platform_rows: list[dict] = []
     for cell_platform in platforms:
         seller = seller_latest.get((cell_platform, code))
@@ -425,6 +459,9 @@ async def compute_pin_detail(
             {
                 "platform": cell_platform,
                 "status": status,
+                "unavailable_reason": unavailable_reason(cell_platform)
+                if cell_platform in unavailable
+                else None,
                 "seller": {
                     "in_stock": seller.in_stock if seller else None,
                     "price": seller.price if seller else None,
@@ -434,7 +471,12 @@ async def compute_pin_detail(
                     "status": seller.status if seller else "missing",
                     "checked_at": seller.checked_at if seller else None,
                     "run_id": seller.run_id if seller else None,
-                    "screenshot_url": seller.screenshot_url if seller else None,
+                    "result_id": seller.id if seller else None,
+                    "screenshot_url": screenshot_url_for(
+                        seller.id, seller.screenshot_url, settings
+                    )
+                    if seller
+                    else None,
                 },
                 "rivals": rivals,
             }

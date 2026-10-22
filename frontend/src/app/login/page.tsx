@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState, type FormEvent } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Logo } from "@/components/AppShell";
-import { AUTH_ENABLED, getSupabase, safeNextPath, useAuth } from "@/lib/auth";
-import { errorMessage } from "@/lib/api";
+import { AUTH_ENABLED, authMismatch, getSupabase, safeNextPath, signOutLocal, takeAuthError, useAuth } from "@/lib/auth";
+import { api, ApiError, errorMessage, useApi } from "@/lib/api";
+import type { Health } from "@/lib/types";
 
 type Method = "password" | "magic";
 type Intent = "signin" | "signup";
@@ -27,6 +28,8 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function DemoMode({ next }: { next: string }) {
+  const { data: health } = useApi<Health>("/health");
+  const mismatch = authMismatch(health?.auth_mode);
   return (
     <Shell>
       <span className="sticker">Demo mode</span>
@@ -38,8 +41,14 @@ function DemoMode({ next }: { next: string }) {
       <p className="text-[14px] leading-[22px] mt-3 text-ink/75">
         To turn on real sign-in, set <code className="font-mono text-[13px]">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
         <code className="font-mono text-[13px]">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in the frontend and{" "}
-        <code className="font-mono text-[13px]">SUPABASE_JWT_SECRET</code> on the backend.
+        <code className="font-mono text-[13px]">SUPABASE_JWT_SECRET</code> (or{" "}
+        <code className="font-mono text-[13px]">SUPABASE_JWKS_URL</code>) on the backend.
       </p>
+      {mismatch && (
+        <p role="alert" className="mt-4 bg-sand border-2 border-ink rounded-[12px] px-4 py-3 text-[14px] font-semibold">
+          ✕ {mismatch}
+        </p>
+      )}
       <Link href={next} className="btn btn-primary w-full mt-6">
         Continue to dashboard
       </Link>
@@ -57,10 +66,46 @@ function SupabaseLogin({ next }: { next: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Session check against the backend: "checking", or a failure that keeps the session (network).
+  const [verify, setVerify] = useState<"idle" | "checking" | "failed">("idle");
+  const verified = useRef<string | null>(null);
+
+  // Why the previous session was dropped (the backend rejected its token).
+  useEffect(() => {
+    const msg = takeAuthError();
+    if (msg) setError(`${msg}. Check that the backend's SUPABASE_JWT_SECRET / SUPABASE_URL belong to the same Supabase project as the frontend.`);
+  }, []);
+
+  /**
+   * Only leave /login once the backend accepts the token. Otherwise the app's first 401 would send
+   * the user back here, which would forward them again: an endless /login <-> /dashboard loop.
+   */
+  const checkSession = useCallback(async () => {
+    setVerify("checking");
+    try {
+      await api("/me", { noAuthRedirect: true });
+      router.replace(next);
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 409)) {
+        await signOutLocal();
+        setVerify("idle");
+        setError(
+          `You signed in, but the ShelfSense server refused the session: ${e.message}.` +
+            (e.status === 401 ? " The backend's SUPABASE_JWT_SECRET / SUPABASE_URL probably don't match this Supabase project." : ""),
+        );
+        return;
+      }
+      setVerify("failed");
+      setError(errorMessage(e, "Couldn't reach the ShelfSense server"));
+    }
+  }, [next, router]);
 
   useEffect(() => {
-    if (ready && session) router.replace(next);
-  }, [ready, session, next, router]);
+    if (!ready || !session) return;
+    if (verified.current === session.access_token) return;
+    verified.current = session.access_token;
+    void checkSession();
+  }, [ready, session, checkSession]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -86,12 +131,11 @@ function SupabaseLogin({ next }: { next: string }) {
           options: { emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent(next)}` },
         });
         if (err) throw err;
-        if (data.session) router.replace(next);
-        else setNotice(`Check ${addr} to confirm your account, then sign in.`);
+        // With a session the effect above verifies it and continues.
+        if (!data.session) setNotice(`Check ${addr} to confirm your account, then sign in.`);
       } else {
         const { error: err } = await sb.auth.signInWithPassword({ email: addr, password });
         if (err) throw err;
-        router.replace(next);
       }
     } catch (err) {
       setError(errorMessage(err, "Sign-in failed"));
@@ -101,10 +145,36 @@ function SupabaseLogin({ next }: { next: string }) {
   };
 
   if (ready && session) {
+    if (verify === "failed") {
+      return (
+        <Shell>
+          <h1 className="text-[28px] leading-[34px]">Signed in, but the server is unreachable</h1>
+          <p role="alert" className="mt-4 bg-sand border-2 border-ink rounded-[12px] px-4 py-3 text-[14px] font-semibold">
+            ✕ {error}
+          </p>
+          <div className="flex flex-wrap gap-3 mt-6">
+            <button type="button" className="btn btn-primary" onClick={() => void checkSession()}>
+              Try again
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                setError(null);
+                setVerify("idle");
+                void signOutLocal();
+              }}
+            >
+              Sign out
+            </button>
+          </div>
+        </Shell>
+      );
+    }
     return (
       <Shell>
         <p className="flex items-center gap-3 font-semibold" role="status">
-          <span className="ss-spin" aria-hidden /> Signed in — taking you back…
+          <span className="ss-spin" aria-hidden /> Signed in — checking your session…
         </p>
       </Shell>
     );

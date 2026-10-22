@@ -312,6 +312,8 @@ async def test_heatmap_endpoint_statuses_and_summary() -> None:
         "out_of_stock": 1,
         "price_gap": 1,
         "stale": 2,
+        "failed": 1,
+        "unavailable": 0,
         "total": 5,
     }
     assert payload["hot_zones"] == []
@@ -531,7 +533,7 @@ async def test_weekly_report_and_changelog() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reviews_endpoint_merges_loves_and_complaints() -> None:
+async def test_reviews_endpoint_separates_own_and_rival_signals() -> None:
     user = await make_user("Reviews")
     product_id = await make_product(user.id, pincodes=["110016"])
     competitor_id = await get_competitor_id(product_id)
@@ -558,8 +560,11 @@ async def test_reviews_endpoint_merges_loves_and_complaints() -> None:
         response = await client.get(f"/api/products/{product_id}/reviews")
     assert response.status_code == 200
     body = response.json()
-    assert body["loves"] == ["Fresh taste", "Low price"]
+    # The seller's own signals and the rivals' are kept apart.
+    assert body["loves"] == ["Fresh taste"]
     assert body["complaints"] == ["Stockouts"]
+    assert body["rival_loves"] == ["Low price"]
+    assert body["rival_complaints"] == ["Stockouts"]
     assert body["items"][0]["entity_id"] is None
 
 

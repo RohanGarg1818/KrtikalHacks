@@ -51,7 +51,8 @@ class TelegramChatLink(BaseModel):
     id: str
     chat_id: str
     chat_title: str | None = None
-    alert_types: list[str] = Field(default_factory=list)
+    # None = every alert kind and stream; [] = nothing; otherwise exactly these.
+    alert_types: list[str] | None = None
     briefing_time: str | None = None
     connected_at: datetime
 
@@ -62,12 +63,15 @@ class TelegramStatusResponse(BaseModel):
     enabled: bool
     bot_running: bool
     bot_username: str | None = None
+    # Demo only: no bot token and not production, so the UI may fake `/start`.
+    simulate_available: bool = False
     links: list[TelegramChatLink] = Field(default_factory=list)
 
 
 class TelegramLinkUpdate(PatchModel):
-    nullable_fields: ClassVar[frozenset[str]] = frozenset({"briefing_time"})
+    nullable_fields: ClassVar[frozenset[str]] = frozenset({"briefing_time", "alert_types"})
 
+    # null = everything (including kinds added later); [] = nothing.
     alert_types: list[TelegramAlertType] | None = Field(default=None, max_length=20)
     briefing_time: ClockTime | None = None
 

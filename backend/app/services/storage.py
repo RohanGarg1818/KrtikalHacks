@@ -40,6 +40,21 @@ def safe_part(value: str) -> str:
     return cleaned
 
 
+def screenshot_url_for(
+    result_id: str, url: str | None, settings: Settings | None = None
+) -> str | None:
+    """URL a client should load for a result's screenshot.
+
+    Production hides local ``/media`` files behind the owner-checked
+    ``/api/check-results/{id}/screenshot`` endpoint; every API response and
+    SSE event that carries a screenshot must go through this helper.
+    """
+    settings = settings or get_settings()
+    if url and settings.is_production and url.startswith("/media/"):
+        return f"/api/check-results/{result_id}/screenshot"
+    return url
+
+
 def _local_target(relative: str) -> Path:
     base = LOCAL_BASE.resolve()
     target = (base / relative).resolve()

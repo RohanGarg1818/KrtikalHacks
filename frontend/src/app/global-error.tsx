@@ -34,7 +34,12 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
             {error.digest && <p style={{ fontSize: 13, fontFamily: "monospace", opacity: 0.8 }}>Ref: {error.digest}</p>}
             <button
               type="button"
-              onClick={reset}
+              // The root layout itself failed: reset() re-renders it in place, which rarely
+              // recovers; a full reload refetches everything.
+              onClick={() => {
+                reset();
+                window.location.reload();
+              }}
               style={{
                 marginTop: 16,
                 background: "#0d1b2a",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, ForeignKey, String
+from sqlalchemy import Boolean, Float, ForeignKey, String, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
@@ -21,6 +21,14 @@ class Product(UUIDPrimaryKeyMixin, Base):
     min_margin_pct: Mapped[float] = mapped_column(Float, default=10.0)
     max_change_pct: Mapped[float] = mapped_column(Float, default=10.0)
     floor_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Smart price-recommendation threshold (see services/price_thresholds.py).
+    commission_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mrp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # essential | regular | premium; NULL means "regular".
+    price_sensitivity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    round_to_price_point: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False, server_default=false()
+    )
     check_frequency: Mapped[str] = mapped_column(String(16), default="daily")
     volatile_boost: Mapped[bool] = mapped_column(Boolean, default=False)
     approval_required: Mapped[bool] = mapped_column(Boolean, default=True)

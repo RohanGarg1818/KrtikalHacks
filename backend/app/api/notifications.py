@@ -25,7 +25,7 @@ from ..schemas.notifications import (
     TelegramTestResponse,
 )
 from ..schemas.products import AlertRuleOut
-from ..services.alerts import effective_rules
+from ..services.alerts import stored_rules, telegram_types_in, telegram_types_out
 from ..services.telegram import (
     bot_is_running,
     build_deeplink,
@@ -145,7 +145,8 @@ async def get_alert_rules(
     session: AsyncSession = Depends(get_session),
 ) -> list[AlertRuleOut]:
     product = await get_owned_product(session, user.id, product_id)
-    rules = await effective_rules(session, product)
+    # Inactive rules too, so a rule switched off can be switched back on.
+    rules = await stored_rules(session, product)
     return [_rule_payload(rule) for rule in rules]
 
 
@@ -158,6 +159,7 @@ async def post_link_code(
     payload: LinkCodeRequest | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> LinkCodeResponse:
     await get_owned_product(session, user.id, product_id)
     chat_type = payload.chat_type if payload else "personal"
@@ -166,7 +168,10 @@ async def post_link_code(
     )
     return LinkCodeResponse(
         code=code.code,
-        deep_link=build_deeplink(code.code, chat_type),
+        # No bot token means no bot to open: never hand out a t.me link then.
+        deep_link=build_deeplink(code.code, chat_type)
+        if settings.telegram_enabled
+        else None,
         command=f"/start {code.code}",
         expires_at=code.expires_at,
         product_id=product_id,
@@ -218,13 +223,16 @@ async def telegram_status(
         chat_title=chat_title,
         enabled=settings.telegram_enabled,
         bot_running=bot_is_running(),
-        bot_username=settings.telegram_bot_username or None,
+        bot_username=(settings.telegram_bot_username or None)
+        if settings.telegram_enabled
+        else None,
+        simulate_available=not settings.telegram_enabled and not settings.is_production,
         links=[
             TelegramChatLink(
                 id=row.id,
                 chat_id=row.chat_id,
                 chat_title=row.chat_title,
-                alert_types=row.alert_types or [],
+                alert_types=telegram_types_out(row.alert_types),
                 briefing_time=row.briefing_time,
                 connected_at=row.connected_at,
             )
@@ -260,6 +268,8 @@ async def update_telegram_link(
             status_code=404, detail="Telegram is not connected for this product"
         )
     changes = payload.model_dump(exclude_unset=True)
+    if "alert_types" in changes:
+        changes["alert_types"] = telegram_types_in(changes["alert_types"])
     for row in rows:
         for field, value in changes.items():
             setattr(row, field, value)

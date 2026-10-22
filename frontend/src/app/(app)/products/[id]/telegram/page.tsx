@@ -2,18 +2,27 @@
 
 /* eslint-disable @next/next/no-img-element */
 import { Suspense, use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, type Variants } from "motion/react";
 import { api, errorMessage, useApi } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { EASE } from "@/lib/motion";
-import type { LinkCode, Product, TelegramStatus } from "@/lib/types";
+import type { LinkCode, Product, TelegramStatus, UserSettings } from "@/lib/types";
 import { ALERT_KIND_LABEL, formatTime, timeAgo } from "@/lib/format";
 import ProductHeader from "@/components/ProductHeader";
 import { CardSkeleton, ErrorCard, useConfirm } from "@/components/ui";
 
-const ALERT_TYPES = ["oos_any", "rival_oos", "price_change_pct", "price_gap_pct", "rating_below", "recommendations", "briefing"];
+/** Every alert kind the engine can raise, plus the two non-alert streams. */
+const ALERT_TYPES = ["oos_any", "oos_area", "price_change_pct", "price_gap_pct", "rating_below", "rival_oos", "custom", "recommendations", "briefing"];
 const LABELS: Record<string, string> = { ...ALERT_KIND_LABEL, recommendations: "New recommendations", briefing: "Morning briefing" };
+/**
+ * API semantics for a chat's `alert_types`: null = everything (including kinds added later),
+ * [] = nothing, otherwise exactly the listed kinds/streams.
+ */
+type AlertSelection = Set<string> | null;
+type Status = TelegramStatus & { simulate_available?: boolean };
+type ChatLink = Omit<TelegramStatus["links"][number], "alert_types"> & { alert_types: string[] | null };
 const STEPS = ["Where alerts go", "Get a code", "Send it to the bot", "Choose alerts", "Test alert"];
 
 /** Status pill from the Settings frame Telegram card (36px, 12px radius, sage = connected, sand = not). */
@@ -155,8 +164,9 @@ function TelegramFlow({ id }: { id: string }) {
   const [step, setStep] = useState(1);
   const expired = useExpired(code?.expires_at);
   // Poll only while a live code is waiting to be redeemed.
-  const status = useApi<TelegramStatus>(`/products/${id}/telegram/status`, { refreshInterval: code && step === 3 && !expired ? 3000 : 0 });
-  const [types, setTypes] = useState<Set<string>>(new Set(["oos_any", "recommendations", "briefing"]));
+  const status = useApi<Status>(`/products/${id}/telegram/status`, { refreshInterval: code && step === 3 && !expired ? 3000 : 0 });
+  const userSettings = useApi<UserSettings>("/me/settings");
+  const [types, setTypes] = useState<AlertSelection>(null);
   const [briefing, setBriefing] = useState("08:00");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
@@ -168,7 +178,7 @@ function TelegramFlow({ id }: { id: string }) {
   const [view, setView] = useState({ step, dir: 1 });
   if (view.step !== step) setView({ step, dir: step > view.step ? 1 : -1 });
 
-  const links = useMemo(() => status.data?.links ?? [], [status.data]);
+  const links = useMemo(() => (status.data?.links ?? []) as ChatLink[], [status.data]);
   const connected = status.data?.status === "connected";
   const newLink = knownLinks ? links.find((l) => !knownLinks.has(l.id)) : undefined;
   const addingChat = knownLinks != null;
@@ -190,9 +200,20 @@ function TelegramFlow({ id }: { id: string }) {
     const link = links[0];
     if (!link || seeded.current) return;
     seeded.current = true;
-    if (link.alert_types.length) setTypes(new Set(link.alert_types));
+    setTypes(link.alert_types == null ? null : new Set(link.alert_types));
     if (link.briefing_time) setBriefing(link.briefing_time);
   }, [links]);
+
+  const wants = (t: string) => types === null || types.has(t);
+  function toggleType(t: string) {
+    setTypes((s) => {
+      const n = new Set(s ?? ALERT_TYPES);
+      if (n.has(t)) n.delete(t);
+      else n.add(t);
+      // Every option picked is the same as "everything", which also covers kinds added later.
+      return ALERT_TYPES.every((x) => n.has(x)) ? null : n;
+    });
+  }
 
   async function act(kind: Exclude<Busy, null>, fn: () => Promise<void>, fallback: string) {
     if (busy) return;
@@ -262,8 +283,12 @@ function TelegramFlow({ id }: { id: string }) {
 
   const ready = status.data && product.data;
   const mock = !status.data?.enabled;
+  // No bot and no demo shortcut (production without a token): a code could never be redeemed.
+  const unavailable = mock && !status.data?.simulate_available;
   const bot = status.data?.bot_username;
   const command = code ? code.command ?? `/start ${code.code}` : "";
+  const channelOff = (userSettings.data?.channels as Record<string, unknown> | undefined)?.telegram === false;
+  const nothingSelected = types !== null && types.size === 0;
 
   return (
     <div className="flex flex-col">
@@ -280,7 +305,27 @@ function TelegramFlow({ id }: { id: string }) {
                 <img src="/figma/shell/alert-bot.svg" alt="" width={16} height={16} />
               </span>
               <p className="text-[15px] leading-[22.5px]">
-                <b className="font-semibold">Demo mode:</b> no bot token is set, so messages are logged instead of sent. You can simulate the bot receiving your code in step 3.
+                {unavailable ? (
+                  <>
+                    <b className="font-semibold">Telegram isn&apos;t set up on this server.</b> There&apos;s no bot to send a code to, so chats can&apos;t be connected yet. Ask your admin to add a Telegram bot token.
+                  </>
+                ) : (
+                  <>
+                    <b className="font-semibold">Demo mode:</b> no Telegram bot is configured, so there&apos;s no real bot to message and alerts are logged instead of sent. In step 3, use “Simulate bot confirmation” to link a demo chat.
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {channelOff && (
+            <div className="card bg-sand px-[26px] py-4">
+              <p className="text-[15px] leading-[22.5px]">
+                <b className="font-semibold">Telegram alerts are switched off</b> in{" "}
+                <Link href="/settings" className="underline underline-offset-2 font-semibold">
+                  Settings
+                </Link>
+                , so no alerts or briefings are sent to any chat until you turn them back on.
               </p>
             </div>
           )}
@@ -328,7 +373,7 @@ function TelegramFlow({ id }: { id: string }) {
                 })}
               </div>
               <div>
-                <button type="button" className="btn btn-primary h-12 px-[26px]" onClick={() => setStep(2)}>Continue →</button>
+                <button type="button" className="btn btn-primary h-12 px-[26px]" disabled={unavailable} onClick={() => setStep(2)}>Continue →</button>
               </div>
             </StepCard>
           )}
@@ -340,7 +385,7 @@ function TelegramFlow({ id }: { id: string }) {
               hint={<>We&apos;ll create a code that links this {chatType === "group" ? "group" : "chat"} to <b className="font-semibold text-ink">{product.data!.name}</b>. It expires in 10 minutes.</>}
             >
               <div className="flex flex-wrap gap-3">
-                <button type="button" className="btn btn-primary h-12 px-[26px]" disabled={!!busy} onClick={getCode}>
+                <button type="button" className="btn btn-primary h-12 px-[26px]" disabled={!!busy || unavailable} onClick={getCode}>
                   {busy === "code" ? "Generating…" : "Generate code"}
                 </button>
                 <button type="button" className="btn btn-ghost h-12 px-[22px]" disabled={!!busy} onClick={() => setStep(1)}>Back</button>
@@ -349,7 +394,11 @@ function TelegramFlow({ id }: { id: string }) {
           )}
 
           {step === 3 && (
-            <StepCard n={3} title={expired ? "This code has expired" : "Open the bot and send the code"} hint={expired ? "Codes last 10 minutes. Generate a new one to continue." : undefined}>
+            <StepCard
+              n={3}
+              title={expired ? "This code has expired" : mock ? "Confirm your demo code" : "Open the bot and send the code"}
+              hint={expired ? "Codes last 10 minutes. Generate a new one to continue." : undefined}
+            >
               {code && (
                 <>
                   <div className="flex flex-wrap items-center gap-4">
@@ -370,7 +419,13 @@ function TelegramFlow({ id }: { id: string }) {
                       </button>
                     )}
                   </div>
-                  {!expired && (
+                  {!expired && mock && (
+                    <p className="text-[15px] leading-[22.5px] text-ink/80">
+                      There&apos;s no Telegram bot on this server to send the code to. Press “Simulate bot confirmation” below to link a demo
+                      {chatType === "group" ? " group" : " chat"} as if the bot had received <code className="font-semibold">{command}</code>. Demo chats only log messages.
+                    </p>
+                  )}
+                  {!expired && !mock && (
                     <div className="text-[16px] leading-6 flex flex-col gap-3">
                       {code.deep_link ? (
                         <div>
@@ -413,7 +468,7 @@ function TelegramFlow({ id }: { id: string }) {
                       <button type="button" className={`btn btn-sm ${expired ? "btn-primary" : "btn-ghost"}`} disabled={!!busy} onClick={getCode}>
                         {busy === "code" ? "Generating…" : "Regenerate code"}
                       </button>
-                      {mock && !expired && (
+                      {status.data?.simulate_available && !expired && (
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"
@@ -443,37 +498,44 @@ function TelegramFlow({ id }: { id: string }) {
             <StepCard n={4} title="Choose your alerts" hint={links.length > 1 ? `These settings apply to all ${links.length} connected chats.` : undefined}>
               <LinkedList links={links} />
               <div>
-                <p className="text-[14px] leading-5 font-semibold mb-3" id="tg-alert-types">Send me</p>
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <p className="text-[14px] leading-5 font-semibold" id="tg-alert-types">Send me</p>
+                  <div className="flex gap-2">
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={types === null} onClick={() => setTypes(null)}>
+                      Select all
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={nothingSelected} onClick={() => setTypes(new Set())}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2" role="group" aria-labelledby="tg-alert-types">
                   {ALERT_TYPES.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      className="pill"
-                      data-active={types.has(t)}
-                      aria-pressed={types.has(t)}
-                      onClick={() =>
-                        setTypes((s) => {
-                          const n = new Set(s);
-                          if (n.has(t)) n.delete(t);
-                          else n.add(t);
-                          return n;
-                        })
-                      }
-                    >
-                      {types.has(t) ? "✓ " : ""}
+                    <button key={t} type="button" className="pill" data-active={wants(t)} aria-pressed={wants(t)} onClick={() => toggleType(t)}>
+                      {wants(t) ? "✓ " : ""}
                       {LABELS[t] ?? t}
                     </button>
                   ))}
                 </div>
+                <p className={`text-[14px] leading-5 mt-3 ${nothingSelected ? "font-semibold bg-sand border-2 border-ink rounded-[8px] px-3 py-2" : "text-ink/80"}`} role="status">
+                  {types === null
+                    ? "Everything is on, including alert types added later."
+                    : nothingSelected
+                      ? "Nothing selected: this chat stays linked but gets no alerts, recommendations or briefings."
+                      : `${types.size} of ${ALERT_TYPES.length} selected. Anything unselected is not sent to this chat.`}
+                </p>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3 border-y border-ink/20 py-4">
-                <label htmlFor="briefing" className="text-[16px] leading-6 font-semibold">Morning briefing time</label>
+                <div className="min-w-0">
+                  <label htmlFor="briefing" className="text-[16px] leading-6 font-semibold">Morning briefing time</label>
+                  {!wants("briefing") && <p className="text-[14px] leading-5 text-ink/80">Turn on “Morning briefing” above to get one.</p>}
+                </div>
                 <input
                   id="briefing"
                   type="time"
                   required
-                  className="input h-12 px-[18px] text-[16px] font-normal w-[176px]"
+                  disabled={!wants("briefing")}
+                  className="input h-12 px-[18px] text-[16px] font-normal w-[176px] disabled:opacity-60 disabled:cursor-not-allowed"
                   value={briefing}
                   onChange={(e) => setBriefing(e.target.value)}
                 />
@@ -487,7 +549,7 @@ function TelegramFlow({ id }: { id: string }) {
                     act(
                       "save",
                       async () => {
-                        await api(`/products/${id}/telegram`, { method: "PATCH", json: { alert_types: [...types], briefing_time: briefing } });
+                        await api(`/products/${id}/telegram`, { method: "PATCH", json: { alert_types: types === null ? null : [...types], briefing_time: briefing } });
                         await status.mutate();
                         setStep(5);
                         toast("Alerts saved");
@@ -556,7 +618,7 @@ function TelegramFlow({ id }: { id: string }) {
   );
 }
 
-function LinkedList({ links }: { links: TelegramStatus["links"] }) {
+function LinkedList({ links }: { links: ChatLink[] }) {
   if (!links.length) return null;
   return (
     <ul className="flex flex-col border-b border-ink/20 pb-2">

@@ -197,6 +197,17 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
 
+# localhost, 127.0.0.1 and the RFC 1918 ranges (10/8, 172.16/12, 192.168/16), any port.
+DEV_ORIGIN_REGEX = (
+    r"^https?://("
+    r"localhost|127\.0\.0\.1"
+    r"|10(\.\d{1,3}){3}"
+    r"|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}"
+    r"|192\.168(\.\d{1,3}){2}"
+    r")(:\d+)?$"
+)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.validate_for_startup()
@@ -205,12 +216,11 @@ def create_app() -> FastAPI:
     app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_origin],
-        # Any local port in development, so `next dev` on 3001 or 127.0.0.1 still connects.
+        allow_origins=settings.cors_origins,
+        # Development: any port on localhost or a private LAN address, so a demo
+        # opened from another device on the same network still connects.
         allow_origin_regex=(
-            r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
-            if settings.app_env == "development"
-            else None
+            DEV_ORIGIN_REGEX if settings.app_env == "development" else None
         ),
         allow_credentials=True,
         allow_methods=["*"],

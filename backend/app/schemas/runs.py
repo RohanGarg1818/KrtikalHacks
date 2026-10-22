@@ -13,7 +13,28 @@ class RunCreate(BaseModel):
 
 class RunCreated(BaseModel):
     run_id: str
+    # Agent sessions cost 1 credit each; Fetch reads (Amazon, Flipkart) are free.
     estimated_credits: int
+    total_jobs: int = 0
+
+
+class SkippedPlatform(BaseModel):
+    platform: str
+    reason: str
+
+
+class RunEstimate(BaseModel):
+    """What a run with this selection would execute (mirrors the runner)."""
+
+    jobs: int
+    credits: int
+    agent_jobs: int
+    platforms: list[str]
+    pincodes: list[str]
+    # Selected apps live mode does not check (TINYFISH_LIVE_PLATFORMS).
+    skipped_platforms: list[SkippedPlatform] = Field(default_factory=list)
+    # Credits left in today's plan budget; None = unlimited.
+    remaining_credits: int | None = None
 
 
 class RunResultItem(BaseModel):

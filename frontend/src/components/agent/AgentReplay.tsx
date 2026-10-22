@@ -70,7 +70,8 @@ export default function AgentReplay(props: {
   const agent = d.agent;
   const visible = steps.slice(0, shown);
   const failed = d.status === "failed" || steps[steps.length - 1]?.kind === "error";
-  const total = steps.reduce((n, s) => n + (s.ms || 0), 0);
+  // Step `ms` is cumulative from the session start: the last step holds the duration.
+  const total = steps[steps.length - 1]?.ms ?? 0;
 
   return (
     <div className="flex flex-col gap-3">

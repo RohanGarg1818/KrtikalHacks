@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .common import (
     AlertKind,
@@ -22,8 +22,15 @@ OptionalQuery = optional_text(500)
 RuleText = optional_text(500)
 MarginPct = Annotated[float, Field(ge=0, le=100, allow_inf_nan=False)]
 ChangePct = Annotated[float, Field(ge=0, le=50, allow_inf_nan=False)]
+# Platform commission on the selling price; quick commerce is typically 18-35%.
+CommissionPct = Annotated[float, Field(ge=0, le=60, allow_inf_nan=False)]
+MrpPrice = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+# essential = 4%, regular = 7%, premium = 10% gap before a price suggestion.
+PriceSensitivity = Literal["essential", "regular", "premium"]
 
 FLOOR_BELOW_COST = "Floor price is below your cost price"
+MRP_BELOW_FLOOR = "MRP is below your floor price"
+MRP_BELOW_COST = "MRP is below your cost price"
 
 MAX_PINCODES_PER_SELECTION = 200
 MAX_ALERT_RULES = 50
@@ -31,6 +38,19 @@ MAX_ALERT_RULES = 50
 
 def floor_below_cost(cost_price: float | None, floor_price: float | None) -> bool:
     return cost_price is not None and floor_price is not None and floor_price < cost_price
+
+
+def mrp_problem(
+    mrp: float | None, floor_price: float | None, cost_price: float | None
+) -> str | None:
+    """Why an MRP contradicts the floor or cost price, else None."""
+    if mrp is None:
+        return None
+    if floor_price is not None and mrp < floor_price:
+        return MRP_BELOW_FLOOR
+    if cost_price is not None and mrp < cost_price:
+        return MRP_BELOW_COST
+    return None
 
 
 class ProductCreate(BaseModel):
@@ -42,6 +62,10 @@ class ProductCreate(BaseModel):
     min_margin_pct: MarginPct = 10
     max_change_pct: ChangePct = 10
     floor_price: NonNegativeFloat | None = None
+    commission_pct: CommissionPct | None = None
+    mrp: MrpPrice | None = None
+    price_sensitivity: PriceSensitivity | None = None
+    round_to_price_point: bool = False
     # Omitted means "the most frequent schedule the user's plan allows".
     check_frequency: CheckFrequency | None = None
     volatile_boost: bool = False
@@ -52,12 +76,23 @@ class ProductCreate(BaseModel):
     def floor_not_below_cost(self) -> "ProductCreate":
         if floor_below_cost(self.cost_price, self.floor_price):
             raise ValueError(FLOOR_BELOW_COST)
+        problem = mrp_problem(self.mrp, self.floor_price, self.cost_price)
+        if problem:
+            raise ValueError(problem)
         return self
 
 
 class ProductUpdate(PatchModel):
     nullable_fields: ClassVar[frozenset[str]] = frozenset(
-        {"brand", "image_url", "cost_price", "floor_price"}
+        {
+            "brand",
+            "image_url",
+            "cost_price",
+            "floor_price",
+            "commission_pct",
+            "mrp",
+            "price_sensitivity",
+        }
     )
 
     name: ProductName | None = None
@@ -68,6 +103,10 @@ class ProductUpdate(PatchModel):
     min_margin_pct: MarginPct | None = None
     max_change_pct: ChangePct | None = None
     floor_price: NonNegativeFloat | None = None
+    commission_pct: CommissionPct | None = None
+    mrp: MrpPrice | None = None
+    price_sensitivity: PriceSensitivity | None = None
+    round_to_price_point: bool | None = None
     check_frequency: CheckFrequency | None = None
     volatile_boost: bool | None = None
     approval_required: bool | None = None
@@ -87,11 +126,25 @@ class ProductResponse(BaseModel):
     min_margin_pct: float
     max_change_pct: float
     floor_price: float | None
+    commission_pct: float | None = None
+    mrp: float | None = None
+    price_sensitivity: str = "regular"
+    round_to_price_point: bool = False
     check_frequency: str
     volatile_boost: bool
     approval_required: bool
     paused: bool
     created_at: datetime
+
+    @field_validator("price_sensitivity", mode="before")
+    @classmethod
+    def default_sensitivity(cls, value: object) -> object:
+        return "regular" if value is None else value
+
+    @field_validator("round_to_price_point", mode="before")
+    @classmethod
+    def default_rounding(cls, value: object) -> object:
+        return False if value is None else value
 
 
 class ProductCard(ProductResponse):

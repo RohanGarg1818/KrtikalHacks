@@ -60,7 +60,7 @@ Copy `.env.example` only if configuration is needed; do not commit a `.env`. Wit
 - **Telegram**: the bot does not start; link codes are still issued, messages are logged instead of sent (no `TELEGRAM_BOT_TOKEN`).
 - `/api/health` reports the mock flags and whether the bot and scheduler are running.
 
-Each integration switches on with its own key; `MOCK_MODE=true` forces all of them back to mocks. `/api/health` reports `auth_mode` (`dev`/`supabase`) and `tinyfish_mode` (`live`/`simulated`).
+Each integration switches on with its own key; `MOCK_MODE=true` forces all of them back to mocks. `/api/health` reports `auth_mode` (`dev`/`supabase`), `tinyfish_mode` (`live`/`simulated`) and `billing_mode` (`test`, or `live` in production where `POST /api/me/plan` is refused).
 
 ## Integration switches
 
@@ -72,9 +72,11 @@ Set these environment variables (see `.env.example`) to move each integration fr
 | `GEMINI_API_KEY` (optionally `GEMINI_MODEL`) | Gemini summaries, recommendations, chat, alert-rule parsing |
 | `TELEGRAM_BOT_TOKEN` (+ `TELEGRAM_BOT_USERNAME`) | Long-polling bot and real message delivery |
 | `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` | Remote screenshot storage |
-| `SUPABASE_JWT_SECRET` | Bearer JWT authentication (required when `APP_ENV=production`; SSE and screenshot URLs also accept `?access_token=`) |
+| `SUPABASE_JWT_SECRET` | Bearer JWT authentication for HS256 tokens (this or `SUPABASE_JWKS_URL` is required when `APP_ENV=production`; SSE and screenshot URLs also accept `?access_token=`) |
+| `SUPABASE_JWKS_URL` | Optional: JWKS for ES256/RS256 Supabase tokens. Blank = `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`; setting it turns Supabase auth on even without a JWT secret |
 | `DATABASE_URL` | Postgres/Supabase instead of SQLite |
 | `FRONTEND_ORIGIN` | CORS allow-list and Telegram "Details" button URLs |
+| `FRONTEND_ORIGINS` | Extra comma-separated CORS origins. In development any port on localhost, 127.0.0.1 and private LAN IPs (10.x, 172.16-31.x, 192.168.x) is allowed too |
 
 ## TinyFish (live checks)
 
@@ -104,6 +106,19 @@ python -m scripts.check_pincode --app instamart --pincode 110017 \
 ```
 
 It streams each agent step, prints the result JSON (`app, pincode, in_stock, price, eta, screenshot_url, ...`), and exits non-zero on failure. Without a key, add `--allow-simulated` to run the same path against the simulator.
+
+## Smart price-recommendation threshold
+
+Price suggestions no longer fire on every small gap (`app/services/price_thresholds.py`):
+
+- **Hard bounds**: `break_even = cost / (1 - commission%)`, `safe_floor = max(floor_price, break_even × (1 + min_margin%))`, ceiling = `mrp`. No suggested or approved price leaves `safe_floor ≤ price ≤ MRP`, and the max-change / daily-cap guardrails still apply.
+- **Trigger**: per-product `price_sensitivity` — essential 4%, regular 7% (default), premium 10% — and never under ₹2. Gaps use the true checkout price when every compared listing has one.
+- **Persistence**: over the threshold in 2 consecutive completed runs, or on ≥ 30% of the compared pincodes in the latest run.
+- **Hysteresis**: within 7 days of the last price suggestion, a new one needs the gap to move by half the threshold.
+- **Outcomes**: `price` (lower to a bounded target, optionally snapped to ₹x9/₹x5/₹x0 price points with `round_to_price_point`), `margin_risk` (rival is below your safe floor — "don't price-match"; approving only adds an action item and never counts toward the daily cap), or nothing, with the reason in the refresh response's `price_note`/`message`. Gemini price advice is filtered through the same rules.
+- New nullable product fields: `commission_pct` (0–60), `mrp` (> 0, ≥ floor and cost), `price_sensitivity`, `round_to_price_point`. Default `price_gap_pct` alert rules use the sensitivity threshold.
+
+**After deploying, run `alembic upgrade head` on the production database** (adds revision `0002_price_thresholds`) before starting the new API.
 
 ## Postgres / Supabase
 

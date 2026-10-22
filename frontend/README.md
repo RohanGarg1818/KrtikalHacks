@@ -14,7 +14,7 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-Set `NEXT_PUBLIC_API_URL` (see `.env.example`) if the backend is not on `http://localhost:8000`.
+Without `NEXT_PUBLIC_API_URL` the app calls port 8000 on the host it was opened from, so the same dev servers work from another device on the LAN (`npm run dev -- -H 0.0.0.0`, then open `http://<your-ip>:3000`; run uvicorn with `--host 0.0.0.0`). Set `NEXT_PUBLIC_API_URL` (see `.env.example`) when the backend lives elsewhere. If the backend can't be reached, the app shows a banner with a Retry button instead of empty data.
 With no API keys the backend runs in demo mode (mock checks, rule-based AI, simulated Telegram) and the app shows a "Demo mode" banner.
 
 ## Screens
@@ -27,6 +27,7 @@ With no API keys the backend runs in demo mode (mock checks, rule-based AI, simu
 | `/products/[id]` | Product dashboard (KPIs, AI summary, actions, competitors, weekly, reviews) |
 | `/heatmap?product=[id]` | Pincode heatmap with live re-checks over SSE |
 | `/help` | Help Centre chatbot |
+| `/alerts` | Alerts inbox (all / unread, mark read) |
 | `/products/[id]/settings` | Product settings |
 | `/settings` | User settings |
 | `/products/[id]/telegram` | Telegram connection |

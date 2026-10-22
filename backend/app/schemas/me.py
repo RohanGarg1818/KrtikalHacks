@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,7 +22,11 @@ class ProfileResponse(BaseModel):
 
 class UsageResponse(BaseModel):
     products: int
+    # Distinct pincodes across every product (account-wide).
     pincodes: int
+    # Plan limits are per product, so these compare against them.
+    max_pincodes_per_product: int = 0
+    max_competitors_per_product: int = 0
     checks_this_week: int
 
 
@@ -34,7 +38,8 @@ class MeResponse(BaseModel):
 
 PersonName = required_text(200)
 BusinessName = optional_text(200)
-BusinessType = required_text(32)
+# The options the settings page offers; stored values outside it still read back.
+BusinessType = Literal["marketplace_seller", "d2c_brand", "brand_team"]
 CityName = optional_text(100)
 
 

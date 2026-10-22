@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import re
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..deps import get_current_user
 from ..models.chat import ChatConversation, ChatMessage
 from ..models.checks import CheckResult
-from ..models.product import Product
+from ..models.intelligence import Recommendation
+from ..models.product import Competitor, Product
 from ..models.user import Subscription, User
 from ..schemas.chat import (
     ChatMessageOut,
@@ -28,7 +27,10 @@ from ..schemas.chat import (
     MessageResponse,
 )
 from ..services.ai import get_ai_provider, with_fallback
+from ..services.ai.base import is_allowed_action_path
+from ..services.heatmap import mean, selected_pairs
 from ..services.help_topics import get_help_topic, list_help_topics
+from ..services.insights import _latest_rival_rows, _latest_seller_rows
 from ..services.intelligence import build_context
 from ..services.plans import daily_credits_used, limits_for
 from .products import get_owned_product
@@ -39,11 +41,11 @@ MAX_MESSAGES_PER_CONVERSATION = 100
 HISTORY_WINDOW = 20
 # An unfocused chat is grounded in at most this many recently checked products.
 UNFOCUSED_PRODUCT_LIMIT = 5
-# In-app destinations a chat action may link to; anything else is dropped.
-ACTION_PATH = re.compile(
-    r"^/(dashboard|products(/[\w-]+(/(settings|telegram|heatmap))?)?|heatmap|help"
-    r"|settings|agents)(\?.*)?$"
-)
+# Pending recommendations / approved actions quoted to the assistant.
+RECOMMENDATION_PREVIEW = 5
+APPROVED_PREVIEW = 3
+PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+DEFAULT_TITLE = "New chat"
 
 EMPTY_CONTEXT = {
     "product_id": None,
@@ -65,11 +67,175 @@ EMPTY_CONTEXT = {
 
 
 def safe_actions(actions: list[dict]) -> list[dict]:
+    """Keep only in-app destinations (same rule the AI output schema enforces)."""
     return [
         action
         for action in actions
-        if isinstance(action.get("path"), str) and ACTION_PATH.match(action["path"])
+        if isinstance(action.get("path"), str) and is_allowed_action_path(action["path"])
     ]
+
+
+def _title_from(message: str) -> str:
+    first = " ".join(message.split())
+    return first if len(first) <= 60 else first[:57].rstrip() + "…"
+
+
+def _checkout_price(row: CheckResult) -> float | None:
+    """True price at checkout (item + fees - offer) when the agent measured it."""
+    agent = (row.raw or {}).get("agent")
+    true_price = agent.get("true_price") if isinstance(agent, dict) else None
+    final = true_price.get("final") if isinstance(true_price, dict) else None
+    if isinstance(final, (int, float)) and not isinstance(final, bool):
+        return float(final)
+    return None
+
+
+def _money(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
+async def _platform_prices(session: AsyncSession, product_id: str) -> list[dict]:
+    """Per-platform shelf and checkout price: yours (average) vs the cheapest rival.
+
+    Built from the latest check per selected platform/pincode, the same cells
+    the dashboard and heatmap use.
+    """
+    pairs = await selected_pairs(session, product_id)
+    seller = [
+        row
+        for (platform, pincode), row in (
+            await _latest_seller_rows(session, product_id)
+        ).items()
+        if platform in pairs.get(pincode, ())
+    ]
+    rivals = [
+        row
+        for (_competitor, platform, pincode), row in (
+            await _latest_rival_rows(session, product_id)
+        ).items()
+        if platform in pairs.get(pincode, ())
+    ]
+    names = dict(
+        (
+            await session.execute(
+                select(Competitor.id, Competitor.name).where(
+                    Competitor.product_id == product_id
+                )
+            )
+        ).all()
+    )
+    rows: list[dict] = []
+    for platform in sorted({row.platform for row in [*seller, *rivals]}):
+        mine = [row for row in seller if row.platform == platform and row.status == "ok"]
+        listed = [row for row in mine if row.in_stock is True and row.price is not None]
+        theirs = [
+            row
+            for row in rivals
+            if row.platform == platform
+            and row.status == "ok"
+            and row.in_stock is True
+            and row.price is not None
+        ]
+        cheapest = min(theirs, key=lambda row: row.price, default=None)
+        my_checkouts = [
+            price for row in listed if (price := _checkout_price(row)) is not None
+        ]
+        rival_checkouts = [
+            price for row in theirs if (price := _checkout_price(row)) is not None
+        ]
+        rows.append(
+            {
+                "platform": platform,
+                "pins_checked": len(mine),
+                "pins_in_stock": len(listed),
+                "oos_pins": sorted(row.pincode for row in mine if row.in_stock is False),
+                "my_price": _money(mean([row.price for row in listed])),
+                "my_checkout": _money(mean(my_checkouts)),
+                "rival_price": _money(cheapest.price) if cheapest else None,
+                "rival_name": names.get(cheapest.competitor_id) if cheapest else None,
+                "rival_checkout": _money(min(rival_checkouts)) if rival_checkouts else None,
+            }
+        )
+    return rows
+
+
+async def _recommendation_context(
+    session: AsyncSession, user_id: str, product_id: str | None
+) -> dict:
+    """Pending recommendations (highest priority first) and recently approved actions."""
+    base = (
+        select(Recommendation, Product.name)
+        .join(Product, Product.id == Recommendation.product_id)
+        .where(Product.user_id == user_id)
+    )
+    counted = (
+        select(Recommendation.status, func.count(Recommendation.id))
+        .join(Product, Product.id == Recommendation.product_id)
+        .where(Product.user_id == user_id)
+        .group_by(Recommendation.status)
+    )
+    if product_id is not None:
+        base = base.where(Recommendation.product_id == product_id)
+        counted = counted.where(Recommendation.product_id == product_id)
+    counts = dict((await session.execute(counted)).all())
+    pending = list(
+        (
+            await session.execute(
+                base.where(Recommendation.status == "pending")
+                .order_by(Recommendation.created_at.desc())
+                .limit(50)
+            )
+        ).all()
+    )
+    pending.sort(key=lambda pair: PRIORITY_RANK.get(pair[0].priority, 3))
+    approved = list(
+        (
+            await session.execute(
+                base.where(Recommendation.status == "approved")
+                .order_by(Recommendation.decided_at.desc())
+                .limit(APPROVED_PREVIEW)
+            )
+        ).all()
+    )
+
+    def row(rec: Recommendation, name: str) -> dict:
+        return {
+            "product_id": rec.product_id,
+            "product_name": name,
+            "priority": rec.priority,
+            "action_text": rec.action_text,
+        }
+
+    return {
+        "pending_count": counts.get("pending", 0),
+        "approved_count": counts.get("approved", 0),
+        "pending_recommendations": [
+            row(rec, name) for rec, name in pending[:RECOMMENDATION_PREVIEW]
+        ],
+        "approved_actions": [row(rec, name) for rec, name in approved],
+    }
+
+
+async def _chat_extras(
+    session: AsyncSession, conversation: ChatConversation, context: dict
+) -> None:
+    """Add per-platform prices, recommendations and catalogue size to a chat context."""
+    for item in context.get("portfolio") or ():
+        item["platform_prices"] = await _platform_prices(session, item["product_id"])
+    if context.get("product_id"):
+        context["platform_prices"] = await _platform_prices(
+            session, context["product_id"]
+        )
+    context.update(
+        await _recommendation_context(
+            session, conversation.user_id, conversation.product_id
+        )
+    )
+    context["product_count"] = (
+        await session.scalar(
+            select(func.count(Product.id)).where(Product.user_id == conversation.user_id)
+        )
+    ) or 0
 
 
 async def _unfocused_context(session: AsyncSession, user_id: str, message: str) -> dict:
@@ -138,10 +304,13 @@ async def _usage_context(session: AsyncSession, user_id: str) -> dict:
     plan = (
         await session.scalar(select(Subscription.plan).where(Subscription.user_id == user_id))
     ) or "free"
+    limits = limits_for(plan)
     return {
         "plan": plan,
         "credits_used_today": await daily_credits_used(session, user_id),
-        "daily_credit_budget": limits_for(plan).daily_credit_budget,
+        "daily_credit_budget": limits.daily_credit_budget,
+        "product_limit": limits.products,
+        "pincode_limit": limits.pincodes,
     }
 
 
@@ -203,6 +372,7 @@ async def _answer_message(
             context = built
     else:
         context = await _unfocused_context(session, conversation.user_id, content)
+    await _chat_extras(session, conversation, context)
     context.update(await _usage_context(session, conversation.user_id))
     provider = get_ai_provider()
     result, source = await with_fallback(
@@ -222,6 +392,9 @@ async def _answer_message(
     )
     session.add(user_message)
     session.add(assistant_message)
+    if conversation.title == DEFAULT_TITLE and not history_rows:
+        # Name an empty "New chat" after its first question so history is scannable.
+        conversation.title = _title_from(content)
     await session.commit()
     await session.refresh(assistant_message)
     reply = _message_payload(assistant_message)
@@ -263,7 +436,7 @@ async def create_conversation(
     conversation = ChatConversation(
         user_id=user.id,
         product_id=product_id,
-        title=title or "New chat",
+        title=title or DEFAULT_TITLE,
     )
     session.add(conversation)
     await session.commit()
@@ -343,6 +516,23 @@ async def get_conversation(
     )
 
 
+@router.delete(
+    "/chat/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_conversation(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Delete one of the caller's conversations together with its messages."""
+    conversation = await get_owned_conversation(session, user, conversation_id)
+    await session.execute(
+        delete(ChatMessage).where(ChatMessage.conversation_id == conversation.id)
+    )
+    await session.delete(conversation)
+    await session.commit()
+
+
 @router.post(
     "/chat/conversations/{conversation_id}/messages",
     response_model=MessageResponse,
@@ -371,8 +561,7 @@ async def post_chat(
     else:
         product_id: str | None = None
         # Name the conversation after its first question so history is scannable.
-        first = " ".join(payload.message.split())
-        title = first if len(first) <= 60 else first[:57].rstrip() + "…"
+        title = _title_from(payload.message)
         if payload.product_id is not None:
             product = await get_owned_product(session, user.id, payload.product_id)
             product_id = product.id

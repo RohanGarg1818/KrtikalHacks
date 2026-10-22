@@ -1,5 +1,9 @@
 """Authentication dependencies: development demo user or Supabase-issued JWTs."""
 
+import asyncio
+import logging
+from functools import lru_cache
+
 import jwt
 from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,15 +17,50 @@ from .models.user import User
 
 DEMO_EMAIL = "riya@shelfsense.demo"
 bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger("shelfsense.auth")
+
+# Supabase signs with the legacy shared secret (HS256) or, with the newer signing
+# keys, an asymmetric key published on the project's JWKS endpoint.
+ASYMMETRIC_ALGORITHMS = frozenset({"ES256", "RS256"})
 
 
-def decode_supabase_token(token: str, secret: str) -> dict:
-    """Validate a Supabase access token; `exp` and `sub` are mandatory."""
+@lru_cache(maxsize=4)
+def jwks_client(url: str) -> jwt.PyJWKClient:
+    """One cached client per JWKS URL; keys are cached for an hour."""
+    return jwt.PyJWKClient(url, cache_keys=True, lifespan=3600, timeout=10)
+
+
+def token_algorithm(token: str) -> str:
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
+    return str(header.get("alg") or "")
+
+
+def decode_supabase_token(token: str, secret: str, signing_key: object = None) -> dict:
+    """Validate a Supabase access token; `exp` and `sub` are mandatory.
+
+    HS256 tokens are checked against ``secret``; ES256/RS256 tokens against
+    ``signing_key`` (a JWKS public key). Anything else is rejected.
+    """
+    algorithm = token_algorithm(token)
+    if algorithm == "HS256":
+        key: object = secret
+    elif algorithm in ASYMMETRIC_ALGORITHMS:
+        key = signing_key
+    else:
+        raise HTTPException(status_code=401, detail="Unsupported token algorithm")
+    if not key:
+        raise HTTPException(
+            status_code=401,
+            detail=f"This server is not configured to verify {algorithm} tokens",
+        )
     try:
         claims = jwt.decode(
             token,
-            secret,
-            algorithms=["HS256"],
+            key,  # type: ignore[arg-type]
+            algorithms=[algorithm],
             audience="authenticated",
             options={"require": ["exp", "sub"]},
         )
@@ -31,6 +70,26 @@ def decode_supabase_token(token: str, secret: str) -> dict:
     if not isinstance(subject, str) or not subject.strip():
         raise HTTPException(status_code=401, detail="Bearer token has no subject")
     return claims
+
+
+async def verify_supabase_token(token: str, settings: Settings) -> dict:
+    """Decode a token with whichever key its algorithm needs (JWKS fetched off-loop)."""
+    signing_key = None
+    if token_algorithm(token) in ASYMMETRIC_ALGORITHMS and settings.jwks_url:
+        try:
+            signing_key = (
+                await asyncio.to_thread(
+                    jwks_client(settings.jwks_url).get_signing_key_from_jwt, token
+                )
+            ).key
+        except jwt.PyJWKClientConnectionError as exc:
+            logger.warning("JWKS fetch failed: %s", exc)
+            raise HTTPException(
+                status_code=503, detail="Could not reach the Supabase signing keys"
+            ) from exc
+        except jwt.PyJWTError as exc:
+            raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
+    return decode_supabase_token(token, settings.supabase_jwt_secret, signing_key)
 
 
 async def provision_user(session: AsyncSession, claims: dict) -> User:
@@ -83,12 +142,12 @@ async def resolve_user(
                 detail="Demo user is missing; run python -m scripts.seed",
             )
         return user
-    if not settings.supabase_jwt_secret:
+    if not settings.supabase_auth_configured:
         # Production without a secret is refused at startup; never fail open here.
         raise HTTPException(status_code=503, detail="Authentication is not configured")
     if not token:
         raise HTTPException(status_code=401, detail="Bearer token required")
-    claims = decode_supabase_token(token, settings.supabase_jwt_secret)
+    claims = await verify_supabase_token(token, settings)
     return await provision_user(session, claims)
 
 

@@ -199,8 +199,8 @@ function LivePanel({ run, onDone }: { run: RunSummary; onDone: () => void }) {
   const names = useCompetitorNames(run.product_id);
   const { attach } = live;
   useEffect(() => {
-    attach(run.id, run.total_jobs);
-  }, [attach, run.id, run.total_jobs]);
+    attach(run.id, run.total_jobs, run.started_at);
+  }, [attach, run.id, run.total_jobs, run.started_at]);
   if (!live.run) return <CardSkeleton rows={4} />;
   return <AgentConsole run={live.run} names={names} title={run.product_name ?? "Live run"} />;
 }
@@ -236,11 +236,11 @@ function AgentsInner() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-col gap-2 max-w-[720px]">
           <p className="eyebrow text-slate">TinyFish web agents</p>
-          <h1 className="text-[44px] sm:text-[56px] leading-[1.05] tracking-[-1.2px]">Agents</h1>
+          <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px]">Agents</h1>
           <p className="text-[17px] leading-[27px] text-ink/85">
             Quick-commerce checks are real TinyFish agent sessions: the agent opens the app, sets the delivery pincode, finds the listing
-            and reads price, stock and delivery time. Amazon and Flipkart pages are read with the TinyFish Fetch API. Every check is
-            read-only: no cart, no checkout, no login.
+            and reads price, stock and delivery time (1 credit per attempt). Amazon and Flipkart pages are read with the TinyFish Fetch
+            API: free, and the same for every pincode. Every check is read-only: no cart, no checkout, no login.
           </p>
         </div>
         <ModeBadge mode={usage.data?.mode} className="text-[13px]! px-4! py-1.5!" />

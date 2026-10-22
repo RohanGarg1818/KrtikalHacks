@@ -61,6 +61,7 @@ from tinyfish import (
 
 from ...config import Settings
 from .agent import AgentTrace, format_rupees
+from .availability import CHECK_STRATEGY
 from .base import (
     AgentStepKind,
     CheckResult,
@@ -111,20 +112,7 @@ FETCH_TIMEOUT_SECONDS = 150.0
 MIN_PAGE_CHARS = 500
 FETCH_RETRYABLE_ERRORS = {"timeout", "target_timeout", "service_busy", "internal_error"}
 
-# How each app is checked, from live tests on 2026-10-18 (pincode 110017):
-# plain Browser API sessions were 403'd by Blinkit, got a blank page on Zepto,
-# and hit a phone-login wall on Instamart search once a location was set. The
-# Agent API in stealth mode read Zepto and Instamart correctly (~3 min each).
-# Blinkit blocked even the stealth agent, so its checks fail fast as "blocked".
-# Amazon.in and Flipkart pages are read with the Fetch API (seconds, no
-# browser); Fetch cannot enter a pincode, so those results are listing-wide.
-CHECK_STRATEGY: dict[str, Literal["agent", "browser", "fetch"]] = {
-    "blinkit": "agent",
-    "zepto": "agent",
-    "instamart": "agent",
-    "amazon": "fetch",
-    "flipkart": "fetch",
-}
+# How each app is checked lives in availability.CHECK_STRATEGY (re-exported here).
 LIVE_APPS: tuple[str, ...] = (*QUICK_COMMERCE_APPS, "amazon", "flipkart")
 # Agent API output_schema: nullable fields use `nullable`, not type arrays.
 AGENT_OUTPUT_SCHEMA = {

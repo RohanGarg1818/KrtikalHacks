@@ -278,6 +278,7 @@ async def test_recommendation_send_telegram_endpoint(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         "app.services.telegram.send_telegram_message", fake_send
     )
+    monkeypatch.setattr("app.services.telegram.bot_is_running", lambda: True)
     app = app_for(user)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -287,6 +288,7 @@ async def test_recommendation_send_telegram_endpoint(monkeypatch: pytest.MonkeyP
         )
         assert response.status_code == 200
         assert response.json()["sent_to_chats"] == 1
+        assert response.json()["telegram_status"] == "sent"
     assert sent == ["42"]
 
 

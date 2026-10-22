@@ -3,10 +3,13 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
 import { useState, useSyncExternalStore } from "react";
-import { api, ApiError, errorMessage, useApi } from "@/lib/api";
+import { mutate } from "swr";
+import { api, useApi } from "@/lib/api";
+import { actOnRecommendation, handleDecisionError, refreshActionViews } from "@/lib/recommendations";
 import { toast } from "@/lib/toast";
-import type { Dashboard, Me, Plans, ProductCard, Recommendation } from "@/lib/types";
+import type { Alert, Dashboard, Me, Plans, ProductCard, Recommendation } from "@/lib/types";
 import { greeting, platformLabel, timeAgo } from "@/lib/format";
+import ActionPlan from "@/components/ActionPlan";
 import AddProductDialog from "@/components/AddProductDialog";
 import { productState } from "@/components/products/ProductViews";
 import { CardSkeleton, Empty, ErrorCard, Meter, PincodeStrip, Skeleton, StatTile, Sticker } from "@/components/ui";
@@ -50,13 +53,25 @@ export default function DashboardPage() {
   const tgConnected = all.filter((p) => p.telegram_connected);
   const firstUnlinked = all.find((p) => !p.telegram_connected);
   const oosDelta = Number(tile("oos_pincodes")) - Number(tile("oos_pincodes_last_week"));
+  const meters = dash.data?.meters;
+
+  /** "Review →" opens the product; the alert counts as read from then on. */
+  const markAlertRead = (a: Alert) => {
+    if (a.read) return;
+    api(`/me/alerts/${encodeURIComponent(a.id)}/read`, { method: "POST" })
+      .then(() => {
+        void mutate((key) => typeof key === "string" && key.startsWith("/me/alerts"));
+        void dash.mutate();
+      })
+      .catch(() => {});
+  };
 
   return (
     <div className="flex flex-col gap-10">
       {/* Greeting */}
       <section className="section-head flex-wrap items-end">
         <div>
-          <h1 className="text-[40px] md:text-[56px] leading-[1.05] tracking-[-1.12px]">
+          <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px]">
             {hello}, {me.data?.profile.name.split(" ")[0] ?? "…"}
           </h1>
           <p className="text-[18px] leading-[27px] font-medium text-slate mt-2">
@@ -67,8 +82,8 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-4">
           {attention.length > 0 && <Sticker>{attention.length} need attention</Sticker>}
-          <button className="btn btn-primary px-[26px] py-[14px]" onClick={() => setAdding(true)}>
-            <img src="/figma/shell/plus-circle.svg" alt="" width={20} height={20} />+ Add product
+          <button className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
+            <img src="/figma/shell/plus-circle.svg" alt="" width={20} height={20} />Add product
           </button>
         </div>
       </section>
@@ -80,11 +95,16 @@ export default function DashboardPage() {
             <p className="eyebrow">{me.data?.plan ?? "…"}</p>
             <p className="text-[14px] font-semibold text-ink/75">Test-mode billing</p>
           </div>
-          {me.data && limits ? (
+          {meters ? (
+            <div className="flex flex-col gap-[10px]">
+              <Meter label="Products" value={meters.products} max={meters.product_limit} />
+              {/* Pincode limits apply per product: show the busiest product against that limit. */}
+              <Meter label="Pincodes (busiest product)" value={meters.max_pincodes_per_product} max={meters.pincode_limit_per_product} />
+              <Meter label="Credits today" value={meters.credits_today} max={meters.daily_credit_budget} />
+            </div>
+          ) : me.data && limits ? (
             <div className="flex flex-col gap-[10px]">
               <Meter label="Products" value={me.data.usage.products} max={limits.products} />
-              <Meter label="Pincodes" value={me.data.usage.pincodes} max={limits.pincodes} />
-              <Meter label="Checks" value={me.data.usage.checks_this_week} max={limits.daily_credit_budget ? limits.daily_credit_budget * 7 : null} />
             </div>
           ) : (
             <Skeleton className="h-24 opacity-20" />
@@ -102,7 +122,7 @@ export default function DashboardPage() {
           value={products.data ? `${cheaper}/${all.length}` : "…"}
           caption={`Price lead on ${cheaper} product${cheaper === 1 ? "" : "s"}`}
         />
-        <StatTile tone="linen" eyebrow="Approved this week" value={dash.data ? tile("approved_this_week") : "…"} caption="Actions this week" />
+        <StatTile tone="linen" eyebrow="Approved this week" value={dash.data ? tile("approved_this_week") : "…"} caption="Approved or done, last 7 days" />
       </section>
 
       {/* Products */}
@@ -162,6 +182,12 @@ export default function DashboardPage() {
               dash.data.recommendations.map((r) => <ActionCard key={r.id} rec={r} onChange={() => dash.mutate()} />)
             )}
           </div>
+          <div className="section-head mt-10">
+            <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Action plan</h2>
+          </div>
+          <div className="pt-5">
+            <ActionPlan showProduct />
+          </div>
         </div>
         <div className="lg:col-span-5 card text-ink p-[26px] flex flex-col gap-2">
           <h2 className="text-[28px] tracking-[-0.56px] border-b border-ink/15 pb-[13px]">Today&apos;s alerts</h2>
@@ -184,7 +210,7 @@ export default function DashboardPage() {
                       </p>
                     </div>
                   </div>
-                  <Link href={`/products/${a.product_id}`} className="font-semibold text-[15px] whitespace-nowrap hover:underline">Review →</Link>
+                  <Link href={`/products/${a.product_id}`} onClick={() => markAlertRead(a)} className="font-semibold text-[15px] whitespace-nowrap hover:underline">Review →</Link>
                 </li>
               ))}
             </ul>
@@ -201,15 +227,15 @@ export default function DashboardPage() {
           <p className="font-semibold text-[20px]">products connected to Telegram</p>
         </div>
         {!all.length ? (
-          <button className="btn btn-ink px-[26px] py-4" onClick={() => setAdding(true)}>
+          <button className="btn btn-ink px-[26px]" onClick={() => setAdding(true)}>
             Add a product first →
           </button>
         ) : firstUnlinked ? (
-          <Link href={`/products/${firstUnlinked.id}/telegram`} className="btn btn-ink px-[26px] py-4">
+          <Link href={`/products/${firstUnlinked.id}/telegram`} className="btn btn-ink px-[26px]">
             Connect remaining {all.length - tgConnected.length} →
           </Link>
         ) : (
-          <span className="inline-flex items-center gap-2 rounded-[12px] border-2 border-ink bg-ink text-linen px-[26px] py-4 font-semibold">✓ All connected</span>
+          <span className="inline-flex items-center gap-2 h-12 rounded-[10px] bg-ink text-linen px-[26px] font-semibold">✓ All connected</span>
         )}
       </section>
 
@@ -219,6 +245,7 @@ export default function DashboardPage() {
             setAdding(false);
             void products.mutate();
             void me.mutate();
+            void dash.mutate();
           }}
         />
       )}
@@ -263,18 +290,16 @@ function ActionCard({ rec, onChange }: { rec: Recommendation & { product_name?: 
     if (busy || done) return;
     setBusy(kind);
     try {
-      await api(`/recommendations/${rec.id}/${kind}`, { method: "POST" });
-      setDone(kind === "approve" ? "✓ Approved" : "Dismissed");
-      toast(kind === "approve" ? "Recommendation approved" : "Recommendation dismissed");
-      setTimeout(onChange, 900);
-    } catch (e) {
-      // 409: already decided elsewhere (e.g. from Telegram) — refresh rather than pretend.
-      if (e instanceof ApiError && e.status === 409) {
-        toast.info("This recommendation was already decided");
+      const res = await actOnRecommendation(rec.id, kind);
+      setDone(kind === "approve" ? (res.effect === "run_started" ? "✓ Re-check started" : "✓ In action plan") : "Dismissed");
+      // The backend message says what approval did (run started / action added / price to set).
+      toast(res.message ?? (kind === "approve" ? "Approved" : "Recommendation dismissed"));
+      setTimeout(() => {
         onChange();
-      } else {
-        toast.error(errorMessage(e, "Couldn't update the recommendation"));
-      }
+        refreshActionViews();
+      }, 900);
+    } catch (e) {
+      handleDecisionError(e, onChange);
     } finally {
       setBusy(null);
     }

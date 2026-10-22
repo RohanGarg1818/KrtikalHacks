@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -38,6 +38,25 @@ async def get_owned_competitor(
     if competitor is None:
         raise HTTPException(status_code=404, detail="Competitor not found")
     return competitor
+
+
+def _norm_url(url: str | None) -> str:
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _norm_name(name: str | None) -> str:
+    return " ".join((name or "").split()).lower()
+
+
+def same_competitor(
+    platform: str, url: str | None, name: str, other: Competitor | CompetitorCreate
+) -> bool:
+    """Same platform and URL, or (when either has no URL) same platform and name."""
+    if platform != other.platform:
+        return False
+    if url and other.url:
+        return _norm_url(url) == _norm_url(other.url)
+    return _norm_name(name) == _norm_name(other.name)
 
 
 def as_suggestion(raw: dict) -> CompetitorCreate | None:
@@ -83,14 +102,32 @@ async def create_competitor(
     session: AsyncSession = Depends(get_session),
 ) -> Competitor:
     await get_owned_product(session, user.id, product_id)
+    tracked = list(
+        (
+            await session.scalars(
+                select(Competitor).where(Competitor.product_id == product_id)
+            )
+        ).all()
+    )
+    duplicate = next(
+        (
+            row
+            for row in tracked
+            if same_competitor(payload.platform, payload.url, payload.name, row)
+        ),
+        None,
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "duplicate_competitor",
+                "message": f"{duplicate.name} is already tracked on this platform",
+            },
+        )
     plan = await get_user_plan(session, user.id)
     limit = competitor_limit(plan)
-    existing = await session.scalar(
-        select(func.count())
-        .select_from(Competitor)
-        .where(Competitor.product_id == product_id)
-    )
-    if (existing or 0) >= limit:
+    if len(tracked) >= limit:
         raise HTTPException(
             status_code=422,
             detail={
@@ -135,11 +172,28 @@ async def discover(
 ) -> CompetitorDiscoveryResponse:
     product = await get_owned_product(session, user.id, product_id)
     query = payload.query if payload and payload.query else product.search_query
-    suggestions = [as_suggestion(item) for item in discover_competitors(query)]
-    return CompetitorDiscoveryResponse(
-        suggestions=[item for item in suggestions if item is not None],
-        source="mock",
+    raw, source = await discover_competitors(query, product.brand)
+    tracked = list(
+        (
+            await session.scalars(
+                select(Competitor).where(Competitor.product_id == product_id)
+            )
+        ).all()
     )
+    own_name = _norm_name(product.name)
+    suggestions: list[CompetitorCreate] = []
+    for item in raw:
+        suggestion = as_suggestion(item)
+        if suggestion is None or _norm_name(suggestion.name) == own_name:
+            continue
+        if any(
+            same_competitor(suggestion.platform, suggestion.url, suggestion.name, other)
+            for other in [*tracked, *suggestions]
+        ):
+            continue
+        suggestions.append(suggestion)
+    # source: "tinyfish" (live TinyFish Search) or "demo" (generic placeholders).
+    return CompetitorDiscoveryResponse(suggestions=suggestions, source=source)
 
 
 @router.post("/competitors/{competitor_id}/confirm", response_model=CompetitorResponse)

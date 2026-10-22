@@ -38,7 +38,9 @@ from ..schemas.products import (
     ProductResponse,
     ProductUpdate,
     floor_below_cost,
+    mrp_problem,
 )
+from ..services.alerts import replace_alert_rules as store_alert_rules
 from ..services.heatmap import STATUS_RANK, classify_pin_status
 from ..services.plans import (
     enforce_frequency,
@@ -383,6 +385,13 @@ async def update_product(
         changes.get("floor_price", product.floor_price),
     ):
         raise validation_failure("floor_price", FLOOR_BELOW_COST)
+    problem = mrp_problem(
+        changes.get("mrp", product.mrp),
+        changes.get("floor_price", product.floor_price),
+        changes.get("cost_price", product.cost_price),
+    )
+    if problem:
+        raise validation_failure("mrp", problem)
     for field, value in changes.items():
         setattr(product, field, value)
     await session.commit()
@@ -440,9 +449,9 @@ async def replace_alert_rules(
     session: AsyncSession = Depends(get_session),
 ) -> list[AlertRuleOut]:
     await get_owned_product(session, user.id, product_id)
-    await session.execute(delete(AlertRule).where(AlertRule.product_id == product_id))
-    session.add_all(
-        AlertRule(product_id=product_id, **rule.model_dump()) for rule in payload.rules
+    # Clearing every rule is remembered, so defaults don't come back.
+    await store_alert_rules(
+        session, product_id, [rule.model_dump() for rule in payload.rules]
     )
     await session.commit()
     return [AlertRuleOut(**rule.model_dump()) for rule in payload.rules]

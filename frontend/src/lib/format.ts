@@ -39,11 +39,13 @@ export const FREQUENCY_LABEL: Record<string, string> = {
 
 export const ALERT_KIND_LABEL: Record<string, string> = {
   oos_any: "Out of stock",
+  oos_area: "Out of stock in an area",
   rival_oos: "Rival out of stock",
   price_change_pct: "Price change",
   price_gap_pct: "Price gap",
   price_gap: "Price gap",
   rating_below: "Rating drop",
+  rating_drop: "Rating drop",
   custom: "Custom rule",
 };
 

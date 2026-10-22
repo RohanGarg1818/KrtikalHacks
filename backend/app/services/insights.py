@@ -678,9 +678,21 @@ def build_weekly_csv(daily_rows: list[dict], this_week_start: datetime) -> str:
 
 
 async def compute_reviews(session: AsyncSession, product_id: str) -> dict:
+    """Review signals, kept apart by whose they are.
+
+    ``loves``/``complaints`` describe the seller's own product; the
+    ``rival_*`` lists come only from competitor review insights, so the UI
+    never presents the seller's own weak spots as a rival's.
+    """
     product = await session.get(Product, product_id)
     if product is None:
-        return {"loves": [], "complaints": [], "items": []}
+        return {
+            "loves": [],
+            "complaints": [],
+            "rival_loves": [],
+            "rival_complaints": [],
+            "items": [],
+        }
     rows = list(
         (
             await session.scalars(
@@ -702,13 +714,16 @@ async def compute_reviews(session: AsyncSession, product_id: str) -> dict:
             names.get(row.competitor_id or "", ""),
         )
     )
-    loves: list[str] = []
-    complaints: list[str] = []
+    merged: dict[str, list[str]] = {
+        "loves": [],
+        "complaints": [],
+        "rival_loves": [],
+        "rival_complaints": [],
+    }
     items: list[dict] = []
     for row in rows:
-        name = product.name if row.competitor_id is None else names.get(
-            row.competitor_id, "Competitor"
-        )
+        own = row.competitor_id is None
+        name = product.name if own else names.get(row.competitor_id, "Competitor")
         items.append(
             {
                 "entity_id": row.competitor_id,
@@ -718,10 +733,10 @@ async def compute_reviews(session: AsyncSession, product_id: str) -> dict:
                 "updated_at": row.updated_at,
             }
         )
-        for loved in row.loves:
-            if loved not in loves:
-                loves.append(loved)
-        for complaint in row.complaints:
-            if complaint not in complaints:
-                complaints.append(complaint)
-    return {"loves": loves, "complaints": complaints, "items": items}
+        prefix = "" if own else "rival_"
+        for key, values in (("loves", row.loves), ("complaints", row.complaints)):
+            bucket = merged[prefix + key]
+            for value in values:
+                if value not in bucket:
+                    bucket.append(value)
+    return {**merged, "items": items}

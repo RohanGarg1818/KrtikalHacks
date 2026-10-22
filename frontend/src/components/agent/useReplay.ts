@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { prefersReducedMotion } from "@/lib/motion";
 import type { AgentStep, CheckResultDetail, RunDetail } from "@/lib/types";
@@ -54,12 +54,14 @@ export function useRunTraces(runId: string | null) {
         const firsts = raw.map((x) => ts(x.steps[0]?.at)).filter((t): t is number => t != null);
         const origin = firsts.length ? Math.min(...firsts) : null;
         const jobs: ReplayJob[] = raw.map(({ r, d, steps }, i) => {
-          // Prefer real timestamps; fall back to cumulative step durations staggered by job index.
-          let cursor = origin == null ? i * 400 : 0;
-          const stepOffsets = steps.map((s) => {
+          // Prefer real timestamps; fall back to each step's cumulative `ms` (time since the job
+          // started), staggered by job index and kept strictly increasing.
+          const stagger = origin == null ? i * 400 : 0;
+          let cursor = stagger;
+          const stepOffsets = steps.map((s, k) => {
             const at = ts(s.at);
             if (origin != null && at != null) return at - origin;
-            cursor += Math.max(120, s.ms || 300);
+            cursor = Math.max(cursor + 120, stagger + (s.ms || (k + 1) * 300));
             return cursor;
           });
           return {
@@ -84,8 +86,10 @@ export function useRunTraces(runId: string | null) {
     };
   }, [runId, version]);
 
-  const current = state && state.runId === runId ? state : null;
-  return current && { ...current, reload: () => setVersion((v) => v + 1) };
+  const reload = useCallback(() => setVersion((v) => v + 1), []);
+  // Same object until the loaded data changes: useReplayState's playback effect depends on it, and a
+  // fresh object every render would restart (and so freeze) the replay on each 100 ms tick.
+  return useMemo(() => (state && state.runId === runId ? { ...state, reload } : null), [state, runId, reload]);
 }
 
 function jobAt(j: ReplayJob, t: number, done: boolean, origin: number): AgentJobState {
@@ -117,7 +121,10 @@ function jobAt(j: ReplayJob, t: number, done: boolean, origin: number): AgentJob
         : null,
     truePrice: complete ? d?.agent?.true_price ?? null : null,
     error: complete && failed ? d?.error ?? j.steps[j.steps.length - 1]?.label ?? "Check failed" : null,
-    ms: complete ? j.steps.reduce((sum, s) => sum + (s.ms || 0), 0) || null : null,
+    // While replaying, a running card's timer follows the replay clock (not wall time since the
+    // original run, which would read as hours).
+    // Step `ms` is cumulative from the job's start, so the last step carries the job's duration.
+    ms: complete ? j.steps[j.steps.length - 1]?.ms || null : started ? Math.max(0, t - j.offset) : null,
     startedAt: started ? origin + j.offset : null,
     finishedAt: complete ? origin + (j.stepOffsets[j.stepOffsets.length - 1] ?? j.offset) : null,
   };
@@ -135,8 +142,9 @@ export function useReplayState(traces: ReturnType<typeof useRunTraces>, playNonc
   const end = useMemo(() => Math.max(0, ...(traces?.jobs ?? []).map((j) => j.stepOffsets[j.stepOffsets.length - 1] ?? j.offset)), [traces]);
   const scale = end > 0 ? Math.max(1, end / TARGET_MS) * speedFactor : 1;
 
+  const loaded = !!traces && !traces.loading;
   useEffect(() => {
-    if (!traces || traces.loading || !playNonce || prefersReducedMotion() || end <= 0) {
+    if (!loaded || !playNonce || prefersReducedMotion() || end <= 0) {
       setPlaying(false);
       setT(Number.POSITIVE_INFINITY);
       return;
@@ -154,7 +162,8 @@ export function useReplayState(traces: ReturnType<typeof useRunTraces>, playNonc
       } else setT(elapsed);
     }, 100);
     return () => clearInterval(interval);
-  }, [traces, playNonce, end, scale]);
+    // Only these restart playback; the per-tick re-render must not.
+  }, [loaded, playNonce, end, scale]);
 
   const run = useMemo<RunState | null>(() => {
     if (!traces?.run) return null;

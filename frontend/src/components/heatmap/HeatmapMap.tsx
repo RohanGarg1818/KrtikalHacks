@@ -28,10 +28,12 @@ const escapeHtml = (v: unknown) => String(v ?? "").replace(/[&<>"'`]/g, (c) => H
 
 function pinHtml(p: HeatmapPin, showRival: boolean, anim: string) {
   const m = STATUS_META[p.status] ?? STATUS_META.stale;
-  const inner = ICON_HTML[p.status] ?? escapeHtml(m.icon);
+  // Apps live mode never checks (Blinkit by default) are grey like stale pins but say why.
+  const unavailable = (p as HeatmapPin & { stale_reason?: string | null }).stale_reason === "unavailable";
+  const inner = unavailable ? "–" : ICON_HTML[p.status] ?? escapeHtml(m.icon);
   const pincode = escapeHtml(p.pincode);
-  const label = escapeHtml(m.label);
-  const rival = showRival
+  const label = escapeHtml(unavailable ? "Not available in live mode" : m.label);
+  const rival = showRival && !unavailable
     ? `<div class="absolute left-1/2 top-[42px] -translate-x-1/2 whitespace-nowrap rounded-md border-2 border-ink bg-linen px-1.5 text-[11px] font-semibold leading-[18px] text-ink shadow-[2px_2px_0_var(--ink)]">${escapeHtml(rupees(p.price))} · R ${escapeHtml(rupees(p.rival_price))}</div>`
     : "";
   // data-pin wraps everything (dimmed via opacity); data-hl wraps only the pin (scaled on highlight).
@@ -67,7 +69,7 @@ function usePinIcons(pins: HeatmapPin[], seqKey: string, showRival: boolean) {
     const step = Math.min(POP_STEP, POP_TOTAL / Math.max(pins.length, 1));
     const out = new Map<string, PinEntry>();
     for (const p of pins) {
-      const sig = `${p.status}|${p.price}|${p.rival_price}`;
+      const sig = `${p.status}|${(p as HeatmapPin & { stale_reason?: string | null }).stale_reason ?? ""}|${p.price}|${p.rival_price}`;
       const look = `${sig}|${showRival}`;
       const old = prev.entries.get(p.pincode);
       if (!fresh && old && old.look === look) {

@@ -20,16 +20,16 @@ from sqlalchemy import select
 from ..config import get_settings
 from ..db import SessionLocal
 from ..models.base import utcnow
-from ..models.checks import CheckRun
+from ..models.checks import ChangeEvent, CheckRun
 from ..models.intelligence import AISummary, Alert
 from ..models.product import Product, ProductPincode
 from ..models.telegram import TelegramLink
 from ..models.user import Subscription, User, UserSettings
+from .alerts import link_wants, telegram_allowed
 from .plans import (
     FREQUENCY_HOURS,
-    credits_exhausted,
-    daily_credits_used,
     limits_for,
+    remaining_credits_today,
 )
 
 logger = logging.getLogger("shelfsense.scheduler")
@@ -38,6 +38,10 @@ SCAN_INTERVAL_SECONDS = 900
 BRIEFING_INTERVAL_SECONDS = 60
 FIRST_SCAN_DELAY_SECONDS = 20
 BRIEFING_HISTORY_LIMIT = 1000
+# "Check more often when prices are volatile": a price move at least this big
+# within the window promotes the product one frequency step faster.
+VOLATILE_CHANGE_PCT = 5.0
+VOLATILE_WINDOW = timedelta(hours=48)
 
 _scheduler: AsyncIOScheduler | None = None
 _briefings_sent: set[tuple[str, str]] = set()
@@ -47,6 +51,39 @@ def is_due(last: datetime | None, interval_hours: float, now: datetime) -> bool:
     if last is None:
         return True
     return now - last >= timedelta(hours=interval_hours)
+
+
+def boosted_interval_hours(
+    interval_hours: float, minimum_hours: int | None
+) -> float:
+    """The next faster schedule than ``interval_hours`` the plan allows."""
+    floor = minimum_hours or 0
+    faster = [
+        hours
+        for hours in FREQUENCY_HOURS.values()
+        if hours < interval_hours and hours >= floor
+    ]
+    return float(max(faster)) if faster else interval_hours
+
+
+async def prices_volatile(session, product_id: str, now: datetime) -> bool:
+    """A recent own or rival price move of at least ``VOLATILE_CHANGE_PCT``."""
+    events = (
+        await session.scalars(
+            select(ChangeEvent).where(
+                ChangeEvent.product_id == product_id,
+                ChangeEvent.kind.in_(("price_rise", "price_drop")),
+                ChangeEvent.detected_at >= now - VOLATILE_WINDOW,
+            )
+        )
+    ).all()
+    for event in events:
+        if event.old_value in (None, 0) or event.new_value is None:
+            continue
+        pct = abs(event.new_value - event.old_value) / event.old_value * 100
+        if pct >= VOLATILE_CHANGE_PCT:
+            return True
+    return False
 
 
 def _prune_briefing_history() -> None:
@@ -88,12 +125,13 @@ async def recover_orphaned_runs() -> int:
 
 async def scan_due_products() -> int:
     """Create scheduled runs for products whose frequency window elapsed."""
-    from .runner import create_run, schedule_run
+    from .runner import build_jobs, create_run, schedule_run
 
     now = utcnow()
     await recover_orphaned_runs()
     started = 0
-    budget_cache: dict[str, bool] = {}
+    # Credits left today per user (None = unlimited), drawn down as runs start.
+    budget_left: dict[str, int | None] = {}
     async with SessionLocal() as session:
         products = list((await session.scalars(select(Product))).all())
         for product in products:
@@ -117,16 +155,18 @@ async def scan_due_products() -> int:
                     minimum,
                 )
                 continue
-            if product.user_id not in budget_cache:
-                used = await daily_credits_used(session, product.user_id)
-                budget_cache[product.user_id] = credits_exhausted(plan_name, used)
-            if budget_cache[product.user_id]:
-                logger.info(
-                    "skipping product=%s: daily credit budget exhausted for plan %s",
-                    product.id,
-                    plan_name,
-                )
-                continue
+            if product.volatile_boost and await prices_volatile(
+                session, product.id, now
+            ):
+                boosted = boosted_interval_hours(float(interval_hours), minimum)
+                if boosted < interval_hours:
+                    logger.info(
+                        "volatile prices: product=%s checked every %sh instead of %sh",
+                        product.id,
+                        boosted,
+                        interval_hours,
+                    )
+                    interval_hours = boosted
             active = await session.scalar(
                 select(CheckRun.id)
                 .where(
@@ -159,6 +199,24 @@ async def scan_due_products() -> int:
                 continue
             platforms = sorted({row.platform for row in pairs})
             pincodes = sorted({row.pincode for row in pairs})
+            if product.user_id not in budget_left:
+                budget_left[product.user_id] = await remaining_credits_today(
+                    session, product.user_id, plan_name
+                )
+            remaining = budget_left[product.user_id]
+            if remaining is not None:
+                # Same estimate as a manual check: one credit per job.
+                estimated = len(await build_jobs(session, product, platforms, pincodes))
+                if estimated > remaining:
+                    logger.info(
+                        "skipping product=%s: run needs %s credits but only %s of "
+                        "the %s plan daily budget remain",
+                        product.id,
+                        estimated,
+                        remaining,
+                        plan_name,
+                    )
+                    continue
             try:
                 run, jobs = await create_run(
                     session,
@@ -174,6 +232,8 @@ async def scan_due_products() -> int:
                     exc.detail,
                 )
                 continue
+            if remaining is not None:
+                budget_left[product.user_id] = max(remaining - len(jobs), 0)
             scheduled = schedule_run(
                 run.id, product_id=product.id, user_id=product.user_id, jobs=jobs
             )
@@ -233,25 +293,30 @@ def _local_time_text(value: datetime) -> str:
 
 
 async def send_briefings() -> int:
-    """Send one morning briefing per linked chat whose time has arrived."""
+    """Send one morning briefing per linked chat whose time has arrived.
+
+    Only chats that opted into "briefing" (or into everything) get one, and
+    never while the user has switched Telegram alerts off.
+    """
     from .telegram import send_telegram_message
 
     settings = get_settings()
     if not settings.telegram_enabled:
         return 0
     _prune_briefing_history()
-    today: str | None = None
     sent = 0
     async with SessionLocal() as session:
         links = list((await session.scalars(select(TelegramLink))).all())
         for link in links:
             user = await session.get(User, link.user_id)
-            if user is None:
+            if user is None or not link_wants(link, "briefing"):
+                continue
+            settings_row = await session.get(UserSettings, user.id)
+            if not telegram_allowed(settings_row):
                 continue
             local_now = _local_now(user)
-            today = today or local_now.date().isoformat()
+            today = local_now.date().isoformat()
             wanted: str | None = None
-            settings_row = await session.get(UserSettings, user.id)
             if link.briefing_time:
                 wanted = link.briefing_time
             elif settings_row is not None and settings_row.briefing_time:
@@ -259,7 +324,7 @@ async def send_briefings() -> int:
             if wanted is None or wanted != _local_time_text(local_now):
                 continue
             key = (link.id, today)
-            if key in _briefings_sent:
+            if key in _briefings_sent or link.last_briefing_date == today:
                 continue
             product = await session.get(Product, link.product_id)
             if product is None:
@@ -270,6 +335,8 @@ async def send_briefings() -> int:
             delivered = await send_telegram_message(link.chat_id, text)
             if delivered:
                 _briefings_sent.add(key)
+                link.last_briefing_date = today
+                await session.commit()
                 sent += 1
     return sent
 

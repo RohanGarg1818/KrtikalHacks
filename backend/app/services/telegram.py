@@ -28,7 +28,11 @@ from ..models.intelligence import Recommendation
 from ..models.product import Product
 from ..models.telegram import TelegramLink, TelegramLinkAttempt, TelegramLinkCode
 from .ai import get_ai_provider, with_fallback
-from .intelligence import build_context, decide_recommendation
+from .intelligence import (
+    RecommendationConflict,
+    approve_recommendation,
+    build_context,
+)
 
 logger = logging.getLogger("shelfsense.telegram")
 
@@ -300,6 +304,103 @@ async def send_recommendation_message(
     return await send_telegram_message(chat_id, text, reply_markup=keyboard)
 
 
+RECOMMENDATION_ALERT_TYPE = "recommendations"
+
+
+def _wants_recommendations(link: TelegramLink) -> bool:
+    """Chat opted into recommendations ([] = everything, ["none"] = nothing)."""
+    from .alerts import link_wants
+
+    return link_wants(link, RECOMMENDATION_ALERT_TYPE)
+
+
+async def _owner_allows_telegram(session: AsyncSession, user_id: str) -> bool:
+    from ..models.user import UserSettings
+    from .alerts import telegram_allowed
+
+    settings_row = await session.scalar(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    )
+    return telegram_allowed(settings_row)
+
+
+async def _product_links(
+    session: AsyncSession, product_id: str, user_id: str | None = None
+) -> list[TelegramLink]:
+    statement = select(TelegramLink).where(TelegramLink.product_id == product_id)
+    if user_id is not None:
+        statement = statement.where(TelegramLink.user_id == user_id)
+    return list((await session.scalars(statement)).all())
+
+
+async def send_recommendation_to_chats(
+    session: AsyncSession, recommendation: Recommendation, *, user_id: str
+) -> tuple[str, int]:
+    """Manual "Send to Telegram": (status, chats reached).
+
+    status is ``no_linked_chats``, ``bot_offline``, ``sent`` or ``failed``.
+    """
+    links = await _product_links(session, recommendation.product_id, user_id)
+    if not links:
+        return "no_linked_chats", 0
+    if not bot_is_running():
+        return "bot_offline", 0
+    product = await session.get(Product, recommendation.product_id)
+    sent = 0
+    for link in links:
+        if await send_recommendation_message(
+            link.chat_id, recommendation, product_name=product.name if product else None
+        ):
+            sent += 1
+    return ("sent" if sent else "failed"), sent
+
+
+async def push_new_recommendations(
+    session: AsyncSession, product: Product, recommendations: list[Recommendation]
+) -> int:
+    """Push freshly generated recommendations to chats that want them."""
+    if not recommendations or not bot_is_running():
+        return 0
+    if not await _owner_allows_telegram(session, product.user_id):
+        return 0
+    sent = 0
+    for link in await _product_links(session, product.id):
+        if not _wants_recommendations(link):
+            continue
+        for recommendation in recommendations:
+            if await send_recommendation_message(
+                link.chat_id, recommendation, product_name=product.name
+            ):
+                sent += 1
+    return sent
+
+
+async def notify_recommendation_approved(
+    session: AsyncSession,
+    recommendation: Recommendation,
+    *,
+    product: Product,
+    message: str,
+) -> int:
+    """Tell linked chats what an approval (web or automatic) set in motion."""
+    if not bot_is_running() or not await _owner_allows_telegram(
+        session, product.user_id
+    ):
+        return 0
+    how = "Auto-approved" if recommendation.decided_via == "auto" else "Approved"
+    text = (
+        f"[ShelfSense] {how} for {product.name}:\n"
+        f"{recommendation.action_text}\n\n{message.removeprefix('Approved — ')}"
+    )
+    sent = 0
+    for link in await _product_links(session, product.id):
+        if _wants_recommendations(link) and await send_telegram_message(
+            link.chat_id, text
+        ):
+            sent += 1
+    return sent
+
+
 async def handle_approve_callback(update, context) -> bool:
     """Process approve:<rec_id>; returns True when the callback was handled."""
     del context
@@ -338,13 +439,22 @@ async def handle_approve_callback(update, context) -> bool:
             )
             return True
         try:
-            await decide_recommendation(
-                session, recommendation, decision="approved", decided_via="telegram"
+            outcome = await approve_recommendation(
+                session, recommendation, decided_via="telegram"
             )
-        except HTTPException as exc:
-            await query.answer(str(exc.detail)[:200])
+        except RecommendationConflict as exc:
+            await query.answer(exc.message[:200])
             return True
-        await query.edit_message_text(f"{recommendation.action_text}\n\nApproved ✓")
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail
+            await query.answer(str(detail)[:200])
+            return True
+        await query.edit_message_text(
+            f"{recommendation.action_text}\n\nApproved ✓ "
+            f"{outcome.message.removeprefix('Approved — ')}"
+        )
         await query.answer("Recommendation approved.")
     return True
 

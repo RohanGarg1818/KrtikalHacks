@@ -33,8 +33,9 @@ from .alerts import deliver_alerts, evaluate_alerts
 from .events import run_events
 from .insights import detect_changes
 from .intelligence import refresh_intelligence
-from .storage import save_screenshot
+from .storage import save_screenshot, screenshot_url_for
 from .tinyfish import TinyFishClient, TinyFishError, get_tinyfish_client
+from .tinyfish.availability import credit_cost, is_fetch_platform, skipped_platforms
 from .tinyfish.base import AgentStep, StepCallback
 from .tinyfish.base import CheckResult as CheckResultPayload
 from .tinyfish.goals import build_check_goal
@@ -44,6 +45,17 @@ logger = logging.getLogger("shelfsense.runner")
 RETRY_BACKOFF_SECONDS = 0.25
 MAX_ATTEMPTS = 2
 ACTIVE_STATUSES = ("queued", "running")
+# Terminal run statuses: "partial" = some jobs returned data, some failed.
+FINISHED_STATUSES = ("done", "partial", "failed")
+
+
+def run_outcome(total: int, failed: int) -> str:
+    """Final status of a run from its job counts."""
+    if failed <= 0:
+        return "done"
+    if failed >= total:
+        return "failed"
+    return "partial"
 
 
 @dataclass(frozen=True)
@@ -161,6 +173,37 @@ async def build_jobs(
     return jobs
 
 
+@dataclass(frozen=True)
+class JobPlan:
+    """The jobs a run would execute, what they cost, and what it leaves out."""
+
+    jobs: list[Job]
+    skipped_platforms: list[str]
+
+    @property
+    def credits(self) -> int:
+        # Agent sessions cost 1 credit; Fetch reads (Amazon, Flipkart) are free.
+        # A retried agent check can cost one more credit than this estimate.
+        return sum(credit_cost(job.platform) for job in self.jobs)
+
+    @property
+    def agent_jobs(self) -> int:
+        return sum(1 for job in self.jobs if not is_fetch_platform(job.platform))
+
+
+async def plan_jobs(
+    session: AsyncSession, product: Product, platforms: list[str], pincodes: list[str]
+) -> JobPlan:
+    """Jobs exactly as ``create_run`` will run them (live mode drops apps that
+    are not in TINYFISH_LIVE_PLATFORMS)."""
+    settings = get_settings()
+    jobs = await build_jobs(session, product, platforms, pincodes)
+    skipped = skipped_platforms(settings, platforms)
+    if skipped:
+        jobs = [job for job in jobs if job.platform not in skipped]
+    return JobPlan(jobs, skipped)
+
+
 async def create_run(
     session: AsyncSession,
     product: Product,
@@ -173,14 +216,12 @@ async def create_run(
         raise HTTPException(
             status_code=422, detail="Paused products cannot be checked"
         )
-    jobs = await build_jobs(session, product, platforms, pincodes)
-    if not jobs:
-        raise HTTPException(status_code=422, detail="No check jobs to run")
     settings = get_settings()
-    if settings.tinyfish_enabled:
-        # Apps that block automation are not checked live (TINYFISH_LIVE_PLATFORMS).
-        jobs = [job for job in jobs if job.platform in settings.live_platforms]
-        if not jobs:
+    plan = await plan_jobs(session, product, platforms, pincodes)
+    jobs = plan.jobs
+    if not jobs:
+        if plan.skipped_platforms:
+            # Apps that block automation are not checked live (TINYFISH_LIVE_PLATFORMS).
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -189,20 +230,23 @@ async def create_run(
                     f"cover: {', '.join(sorted(settings.live_platforms))}.",
                 },
             )
+        raise HTTPException(status_code=422, detail="No check jobs to run")
+    if plan.skipped_platforms:
+        logger.info(
+            "live mode skips %s for product=%s", plan.skipped_platforms, product.id
+        )
     limit = settings.tinyfish_live_max_jobs_per_run
     # Only agent checks are slow and paid; Fetch checks (Amazon, Flipkart) read
     # one cached page per run and cost nothing extra.
-    from .tinyfish.tinyfish_client import CHECK_STRATEGY
-
-    agent_jobs = [job for job in jobs if CHECK_STRATEGY.get(job.platform) == "agent"]
-    if settings.tinyfish_enabled and limit and len(agent_jobs) > limit:
+    agent_jobs = plan.agent_jobs
+    if settings.tinyfish_enabled and limit and agent_jobs > limit:
         # Live agent checks take minutes and cost real credits each.
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "live_job_limit",
                 "message": (
-                    f"This check needs {len(agent_jobs)} live TinyFish agent runs; the limit is "
+                    f"This check needs {agent_jobs} live TinyFish agent runs; the limit is "
                     f"{limit} per run (TINYFISH_LIVE_MAX_JOBS_PER_RUN). Pick fewer "
                     "pincodes or platforms."
                 ),
@@ -612,7 +656,9 @@ async def execute_run(
                         "eta_minutes": row.eta_minutes,
                         "rating": row.rating,
                         "status": row.status,
-                        "screenshot_url": row.screenshot_url,
+                        "screenshot_url": screenshot_url_for(
+                            row.id, row.screenshot_url, settings
+                        ),
                         "checked_at": row.checked_at.isoformat(),
                         "ms": trace.elapsed_ms,
                         "credits": credits,
@@ -630,7 +676,7 @@ async def execute_run(
                     counters["failed"] += 1
                     counters["done"] += 1
 
-            final_status = "failed" if counters["failed"] == total else "done"
+            final_status = run_outcome(total, counters["failed"])
             closed = await session.execute(
                 update(CheckRun)
                 .where(CheckRun.id == run_id, CheckRun.status == "running")

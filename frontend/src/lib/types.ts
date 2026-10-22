@@ -15,6 +15,8 @@ export interface Health {
   scheduler_running: boolean;
   auth_mode?: AuthMode;
   tinyfish_mode?: TinyFishMode;
+  /** "live" (production): plans change through billing and POST /me/plan is refused. */
+  billing_mode?: "test" | "live";
 }
 
 /** Body every API error returns. */
@@ -36,13 +38,22 @@ export interface Me {
     created_at: string;
   };
   plan: string;
-  usage: { products: number; pincodes: number; checks_this_week: number };
+  usage: {
+    products: number;
+    /** Distinct pincodes across every product. */
+    pincodes: number;
+    /** Busiest product: plan pincode/competitor limits are per product. */
+    max_pincodes_per_product?: number;
+    max_competitors_per_product?: number;
+    checks_this_week: number;
+  };
 }
 
 export interface PlanLimits {
   plan: string;
   products: number | null;
   pincodes: number | null;
+  competitors?: number;
   minimum_frequency_hours: number | null;
   daily_credit_budget: number | null;
 }
@@ -50,12 +61,26 @@ export interface Plans { current: string; plans: PlanLimits[]; platforms: string
 
 export interface Pincode { code: string; area_name: string; city: string; lat: number; lng: number }
 
+/** Plan usage measured like the limits are enforced (pincodes per product, credits per day). */
+export interface PlanMeters {
+  plan: string;
+  products: number;
+  product_limit: number | null;
+  max_pincodes_per_product: number;
+  pincode_limit_per_product: number | null;
+  credits_today: number;
+  daily_credit_budget: number | null;
+}
+
 export interface Dashboard {
+  meters?: PlanMeters | null;
   tiles: { key: string; label: string; value: number }[];
   alerts: Alert[];
   recommendations: (Recommendation & { product_name: string | null })[];
   telegram: { connected: boolean; total: number };
 }
+
+export type PriceSensitivity = "essential" | "regular" | "premium";
 
 export interface Product {
   id: string;
@@ -68,6 +93,14 @@ export interface Product {
   min_margin_pct: number;
   max_change_pct: number;
   floor_price: number | null;
+  /** Platform commission on the selling price (%); raises the break-even price. */
+  commission_pct: number | null;
+  /** Maximum retail price: recommendations never go above it. */
+  mrp: number | null;
+  /** How big a gap to the cheapest rival must be before a price suggestion (4 / 7 / 10%). */
+  price_sensitivity: PriceSensitivity;
+  /** Snap suggested prices to ₹49 / ₹99-style price points. */
+  round_to_price_point: boolean;
   check_frequency: string;
   volatile_boost: boolean;
   approval_required: boolean;
@@ -173,7 +206,49 @@ export interface Recommendation {
   status?: string;
   decided_via?: string | null;
   created_at: string;
+  decided_at?: string | null;
 }
+
+/** Response of approve / dismiss / done / reopen / send-telegram on a recommendation. */
+export interface DecisionResult {
+  id: string;
+  status: string;
+  decided_via?: string | null;
+  decided_at?: string | null;
+  sent_to_chats?: number;
+  /** Approve only: what the approval set in motion. */
+  effect?: "run_started" | "action_created" | null;
+  run_id?: string | null;
+  action_item?: string | null;
+  telegram_status?: "sent" | "failed" | "bot_offline" | "no_linked_chats" | null;
+  message?: string | null;
+}
+
+/** `POST /products/{id}/ai/recommendations`: what the refresh actually did. */
+export interface GenerateResult {
+  source: string;
+  recommendations: Recommendation[];
+  superseded: number;
+  expired: number;
+  skipped_recent: number;
+  auto_approved: number;
+  reason: "no_check_data" | "limit_reached" | "no_change" | null;
+  /** Why no price suggestion was made, e.g. "Price gap 3.1% is below your 7% threshold". */
+  price_note?: string | null;
+  message: string;
+}
+
+/** An approved (open) or done recommendation on the seller's action list (`GET /actions`). */
+export interface ActionItem extends Recommendation {
+  product_name: string | null;
+  kind: string;
+  action_item: string;
+  effect: string | null;
+  run_id: string | null;
+  target_price: number | null;
+  done_at: string | null;
+}
+export interface ActionList { open: ActionItem[]; done: ActionItem[] }
 
 export interface Spark { value: number | null; sparkline: (number | null)[] }
 export interface Overview {
@@ -231,8 +306,12 @@ export interface Weekly {
 }
 
 export interface Reviews {
+  /** The seller's own strengths and weak spots. */
   loves: string[];
   complaints: string[];
+  /** Only from competitor review data; empty when none was collected. */
+  rival_loves?: string[];
+  rival_complaints?: string[];
   items: { entity_id: string | null; name: string; loves: string[]; complaints: string[]; updated_at: string }[];
 }
 
@@ -266,10 +345,11 @@ export interface TelegramStatus {
     id: string;
     chat_id: string;
     chat_title: string | null;
-    alert_types: string[];
+    alert_types: string[] | null;
     briefing_time: string | null;
     connected_at: string;
   }[];
+  simulate_available?: boolean;
 }
 
 export interface LinkCode {
@@ -479,3 +559,21 @@ export type RunEvent =
       failed_jobs: number;
       credits_used?: number;
     };
+
+/** POST /me/plan (test mode only). */
+export interface PlanChange {
+  plan: string;
+  status: string;
+  test_mode: boolean;
+  adjusted_products: number;
+  paused_products: number;
+  /** Products tracking more pincodes/competitors than the new plan allows (nothing is deleted). */
+  over_limit?: {
+    product_id: string;
+    name: string;
+    pincodes: number;
+    pincode_limit: number | null;
+    competitors: number;
+    competitor_limit: number;
+  }[];
+}

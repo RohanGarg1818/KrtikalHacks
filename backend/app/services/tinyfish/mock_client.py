@@ -4,6 +4,8 @@ Each check plays out like a real agent session — browser start, navigation,
 delivery pincode, search, product page, extraction, true-price checkout
 (quick commerce only, never placing an order), screenshot — streaming every
 step through ``on_step`` with realistic pacing (about 1.5-4 s per session).
+Amazon and Flipkart mirror live mode's Fetch API reads: listing-wide (the
+same result for every pincode, ``pincode_specific: False``) and free.
 
 Outcomes are deterministic per (query, pincode, platform, url): ~5% of
 sessions fail, ~15% come back out of stock, and prices drift enough to
@@ -21,6 +23,7 @@ import random
 from ...config import get_settings
 from ...models.base import utcnow
 from .agent import AgentTrace, format_rupees
+from .availability import is_fetch_platform
 from .base import (
     CheckResult,
     FetchResult,
@@ -99,6 +102,8 @@ class MockTinyFishClient:
         on_step: StepCallback | None = None,
     ) -> CheckResult:
         clean_query = " ".join(query.split())
+        if is_fetch_platform(platform):
+            return await self._fetch_check(platform, pincode, clean_query, url, on_step)
         digest = _digest(f"{clean_query.lower()}|{pincode}|{platform}|{url or ''}")
         roll = int(digest[0:6], 16) % 100
         price_units = int(digest[6:12], 16) % 4500
@@ -203,6 +208,97 @@ class MockTinyFishClient:
                 "platform": platform,
                 "pincode": pincode,
                 "url": url,
+                "agent": trace.as_raw(),
+            },
+        )
+
+    async def _fetch_check(
+        self,
+        platform: str,
+        pincode: str,
+        clean_query: str,
+        url: str | None,
+        on_step: StepCallback | None,
+    ) -> CheckResult:
+        """Simulated Fetch API read of a marketplace listing, like live mode:
+        listing-wide (the same answer for every pincode) and free of credits."""
+        digest = _digest(f"{clean_query.lower()}|{platform}|{url or ''}")
+        roll = int(digest[0:6], 16) % 100
+        price_units = int(digest[6:12], 16) % 4500
+        misc = int(digest[12:18], 16)
+        target_url = agent_target_url(url)
+        domain = site_domain(platform)
+        trace = AgentTrace(
+            goal=f"Fetch API: read the {domain} listing for “{clean_query}”",
+            mode="simulated",
+            on_step=on_step,
+        )
+        kinds = ["session", "open", "extract", "screenshot"]
+        if target_url is None:
+            kinds.append("search")
+        pacer = _Pacer(random.uniform(*self.delay) / 2, kinds)
+
+        await trace.step("session", "Using TinyFish Fetch API", "no browser, read-only")
+        await pacer.pause("session")
+        if target_url is None:
+            await trace.step("search", f"Finding the {domain} listing", clean_query)
+            await pacer.pause("search")
+        await trace.step("open", f"Reading {domain} product page", target_url)
+        await pacer.pause("open")
+        if roll < 5:
+            await trace.step("error", "Page blocked automation")
+            raise TinyFishError(
+                f"{domain} blocked the page fetch (simulated, {platform})",
+                retryable=False,
+                credits_used=0,
+                agent=trace.as_raw(),
+            )
+        price = round(15 + price_units / 100, 2)
+        mrp = round(price + 3 + misc % 7, 2)
+        eta_minutes = 1440 + misc % 2880
+        in_stock = roll >= 20
+        stock_label = "In stock" if in_stock else "Out of stock"
+        delivery_text = f"Delivery in {_eta_label(eta_minutes)}"
+        await trace.step(
+            "extract",
+            "Reading price, stock and delivery",
+            f"{format_rupees(price)} · MRP {format_rupees(mrp)} · {stock_label} · "
+            f"{delivery_text}",
+        )
+        await pacer.pause("extract")
+        await trace.step("screenshot", "Rendering the listing as evidence")
+        screenshot = render_product_screenshot(
+            platform=platform,
+            pincode=pincode,
+            query=clean_query,
+            title=clean_query,
+            price=price,
+            mrp=mrp,
+            in_stock=in_stock,
+            eta_minutes=eta_minutes,
+            true_price=None,
+            session_id=trace.session_id,
+            captured_at=utcnow(),
+        )
+        await pacer.pause("screenshot")
+        await trace.step("done", "Check complete", "Fetch API (listing-wide, not per pincode)")
+        return CheckResult(
+            product=clean_query,
+            in_stock=in_stock,
+            price=price,
+            mrp=mrp,
+            eta_minutes=eta_minutes,
+            rating=round(3.6 + (misc // 7) % 15 / 10, 1),
+            screenshot_bytes=screenshot,
+            screenshot_content_type="image/svg+xml",
+            credits_used=0,
+            raw={
+                "simulated": True,
+                "platform": platform,
+                "pincode": pincode,
+                "pincode_specific": False,
+                "url": url,
+                "delivery_text": delivery_text,
                 "agent": trace.as_raw(),
             },
         )

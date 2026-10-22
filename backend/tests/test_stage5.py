@@ -135,6 +135,26 @@ async def seed_check_data(product_id: str) -> None:
     await add_result(run_id, product_id, competitor_id, "blinkit", "110019", price=30.0, in_stock=True, rating=4.2)
 
 
+async def seed_gap_runs(
+    product_id: str, *, mine: float = 34.0, rival: float = 31.0, runs: int = 2
+) -> None:
+    """Completed runs after ``seed_check_data`` where you stay above the rival.
+
+    Price suggestions need a gap that persists across runs (see
+    services/price_thresholds.py), so a single run is not enough. 110017 stays
+    out of stock so the restock advice is still there too.
+    """
+    competitor_id = await get_competitor_id(product_id)
+    for index in range(runs):
+        checked_at = NOW - timedelta(minutes=8 - index)
+        run_id = await make_run(product_id)
+        for pin in ("110016", "110019"):
+            await add_result(run_id, product_id, None, "blinkit", pin, price=mine, in_stock=True, rating=4.4, checked_at=checked_at)
+        await add_result(run_id, product_id, None, "blinkit", "110017", in_stock=False, checked_at=checked_at)
+        for pin in ("110016", "110017", "110019"):
+            await add_result(run_id, product_id, competitor_id, "blinkit", pin, price=rival, in_stock=True, rating=4.2, checked_at=checked_at)
+
+
 @pytest.mark.asyncio
 async def test_fallback_summary_is_grounded() -> None:
     provider = FallbackAIProvider()
@@ -286,6 +306,7 @@ async def test_recommendations_generate_approve_dismiss() -> None:
     user = await make_user("Riya Sharma")
     product_id = await make_product(user.id)
     await seed_check_data(product_id)
+    await seed_gap_runs(product_id)
     app = app_for(user)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -388,7 +409,7 @@ async def test_help_topics_list_and_detail() -> None:
 
         detail = await client.get("/api/help/topics/heatmap")
         assert detail.status_code == 200
-        assert "out_of_stock" in detail.json()["body"]
+        assert "out of stock" in detail.json()["body"]
 
         missing = await client.get("/api/help/topics/nope")
         assert missing.status_code == 404

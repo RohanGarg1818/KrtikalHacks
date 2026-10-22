@@ -8,12 +8,16 @@ import { AnimatePresence, motion, type Variants } from "motion/react";
 import { api, useApi } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { EASE } from "@/lib/motion";
-import type { ChatMessage, Conversation, ConversationDetail, HelpTopic, Me, ProductCard } from "@/lib/types";
-import { Skeleton } from "@/components/ui";
+import type { ChatMessage, Conversation, ConversationDetail, Health, HelpTopic, Me, ProductCard } from "@/lib/types";
+import { Skeleton, useConfirm } from "@/components/ui";
 import Reveal, { RevealItem } from "@/components/motion/Reveal";
 
-const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@shelfsense.app";
-const SUPPORT_IS_DEMO = !process.env.NEXT_PUBLIC_SUPPORT_EMAIL;
+/** Shown only when the deployment configures a real support inbox; there is no placeholder address. */
+const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL?.trim() || null;
+
+/** `source` is known only for replies received in this session ("gemini" | "fallback"). */
+type LiveMessage = ChatMessage & { source?: string };
+type ChatReply = { conversation_id: string; answer: string; actions: Record<string, unknown>[]; evidence: Record<string, unknown>[]; source: string };
 
 /** Assistant actions may only deep-link to known in-app routes (never external or protocol-relative URLs). */
 const SAFE_ACTION_PATH = /^\/(dashboard|products(\/[\w-]+(\/(settings|telegram|heatmap))?)?|heatmap|help|settings|agents)(\?[^#\s]*)?(#[\w-]*)?$/;
@@ -71,9 +75,13 @@ export default function HelpPage() {
   const products = useApi<ProductCard[]>("/products");
   const topics = useApi<{ items: HelpTopic[] }>("/help/topics");
   const history = useApi<{ items: Conversation[] }>("/chat/conversations");
+  const health = useApi<Health>("/health");
+  const aiConfigured = health.data?.integrations?.gemini;
+  const [confirmUi, confirm] = useConfirm();
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [productId, setProductId] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [ask, setAsk] = useState("");
   const [typing, setTyping] = useState(false);
@@ -86,6 +94,8 @@ export default function HelpPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const chatCard = useRef<HTMLElement>(null);
   const scrollTopicIntoView = useRef(false);
+  // Bumped whenever the visible thread changes, so a reply that lands after switching is dropped.
+  const threadToken = useRef(0);
 
   // Braces matter: never return a value (scrollIntoView returns a Promise in newer Chrome) from an effect.
   useEffect(() => {
@@ -109,6 +119,8 @@ export default function HelpPage() {
       toast.error(e instanceof Error ? e.message : "Couldn't open that conversation");
       return;
     }
+    threadToken.current += 1;
+    setTyping(false);
     setConversationId(c.id);
     setProductId(c.product_id ?? "");
     setThread((t) => t + 1);
@@ -118,10 +130,33 @@ export default function HelpPage() {
   }
 
   function newChat() {
+    threadToken.current += 1;
+    setTyping(false);
     setConversationId(null);
     setThread((t) => t + 1);
     setLiveFrom(0);
     setMessages([]);
+  }
+
+  async function deleteConversation(c: Conversation) {
+    const ok = await confirm({
+      title: "Delete this conversation?",
+      body: <>“{c.title}” and its {c.message_count} message{c.message_count === 1 ? "" : "s"} will be removed for good.</>,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setDeleting(c.id);
+    try {
+      await api(`/chat/conversations/${c.id}`, { method: "DELETE" });
+      if (conversationId === c.id) newChat();
+      await history.mutate();
+      toast.success("Conversation deleted");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't delete that conversation");
+    } finally {
+      setDeleting(null);
+    }
   }
 
   function revealChat() {
@@ -135,27 +170,40 @@ export default function HelpPage() {
     scrollTopicIntoView.current = !!next;
   }
 
-  async function send(text: string) {
+  /** Returns false when nothing was sent (empty text or a reply still pending), so callers keep the draft. */
+  function send(text: string): boolean {
     const content = text.trim();
-    if (!content || typing) return;
+    if (!content || typing) return false;
+    void deliver(content);
+    return true;
+  }
+
+  // POST /chat continues the open conversation (the server replays its history), else starts one.
+  async function deliver(content: string) {
+    const token = threadToken.current;
     setDraft("");
     revealChat();
     setMessages((m) => [...m, { role: "user", content, actions: [], evidence: [], created_at: new Date().toISOString() }]);
     setTyping(true);
     try {
-      const res = await api<{ conversation_id: string; answer: string; actions: Record<string, unknown>[]; evidence: Record<string, unknown>[] }>(
-        "/chat",
-        { method: "POST", json: { message: content, conversation_id: conversationId, product_id: conversationId ? null : productId || null } },
-      );
-      setConversationId(res.conversation_id);
-      setMessages((m) => [...m, { role: "assistant", content: res.answer, actions: res.actions, evidence: res.evidence, created_at: new Date().toISOString() }]);
+      const res = await api<ChatReply>("/chat", {
+        method: "POST",
+        json: { message: content, conversation_id: conversationId, product_id: conversationId ? null : productId || null },
+      });
       history.mutate();
+      if (token !== threadToken.current) return;
+      setConversationId(res.conversation_id);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: res.answer, actions: res.actions, evidence: res.evidence, created_at: new Date().toISOString(), source: res.source },
+      ]);
     } catch (e) {
+      if (token !== threadToken.current) return;
       const reason = e instanceof Error ? e.message : "I couldn't answer that";
       toast.error(`Chat failed: ${reason}`);
       setMessages((m) => [...m, { role: "assistant", content: `Sorry — ${reason}.`, actions: [], evidence: [], created_at: new Date().toISOString() }]);
     } finally {
-      setTyping(false);
+      if (token === threadToken.current) setTyping(false);
     }
   }
 
@@ -165,15 +213,14 @@ export default function HelpPage() {
     <div className="flex flex-col gap-10 w-full max-w-[1100px]">
       {/* Page header */}
       <section className="flex flex-col gap-6">
-        <h1 className="text-[40px] leading-[48px] md:text-[56px] md:leading-[70px] font-semibold text-ink">
+        <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] font-semibold text-ink">
           How can we help{firstName ? `, ${firstName}` : ""}?
         </h1>
         <form
           className="relative flex items-center h-16 rounded-[16px] border-2 border-ink bg-linen shadow-[6px_6px_0_var(--ink)] pl-[22px] pr-[10px] gap-0 focus-within:ring-4 focus-within:ring-slate/20"
           onSubmit={(e) => {
             e.preventDefault();
-            send(ask);
-            setAsk("");
+            if (send(ask)) setAsk("");
           }}
         >
           <img src="/figma/help/imgMargin.svg" alt="" width={34.371} height={18.365} className="shrink-0" />
@@ -280,7 +327,7 @@ export default function HelpPage() {
                     </motion.div>
                   ) : (
                     <motion.div key={i} className="flex gap-3 items-start max-w-[min(580px,100%)]" custom={-1} style={{ originX: 0, originY: 1 }} {...anim}>
-                      <AssistantMessage message={m} heatmapHref={heatmapHref} live={live} />
+                      <AssistantMessage message={m} heatmapHref={heatmapHref} live={live} aiConfigured={aiConfigured} />
                     </motion.div>
                   );
                 })}
@@ -338,8 +385,18 @@ export default function HelpPage() {
             </form>
           </div>
           <p className="px-2 text-[14px] leading-5 text-ink/80">
-            AI answers use your latest check data. Need a human?{" "}
-            <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline decoration-2 underline-offset-2">Email support{SUPPORT_IS_DEMO ? " (demo address)" : ""}.</a>
+            {aiConfigured === false
+              ? "Offline assistant: answers come from built-in guides and your latest check data (no AI key configured)."
+              : "AI answers use your latest check data."}
+            {SUPPORT_EMAIL && (
+              <>
+                {" "}Need a human?{" "}
+                <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold underline decoration-2 underline-offset-2">
+                  Email {SUPPORT_EMAIL}
+                </a>
+                .
+              </>
+            )}
           </p>
         </section>
 
@@ -417,10 +474,10 @@ export default function HelpPage() {
             <div className="flex flex-col">
               <ul className="flex flex-col">
                 {shownConversations.map((c, i) => (
-                  <RevealItem as="li" index={i} key={c.id} className={i < shownConversations.length - 1 ? "border-b border-ink" : ""}>
+                  <RevealItem as="li" index={i} key={c.id} className={`flex items-center gap-2 ${i < shownConversations.length - 1 ? "border-b border-ink" : ""}`}>
                     <button
                       onClick={() => openConversation(c.id)}
-                      className={`w-full flex items-center justify-between gap-3 py-[14px] text-left transition-colors hover:text-slate ${conversationId === c.id ? "text-slate" : "text-ink"}`}
+                      className={`flex-1 min-w-0 flex items-center justify-between gap-3 py-[14px] text-left transition-colors hover:text-slate ${conversationId === c.id ? "text-slate" : "text-ink"}`}
                       title={`${c.message_count} messages`}
                     >
                       <span className="flex items-center gap-2.5 min-w-0">
@@ -428,6 +485,16 @@ export default function HelpPage() {
                         <span className={`truncate text-[16px] leading-6 font-semibold ${conversationId === c.id ? "underline decoration-2 underline-offset-4" : ""}`}>{c.title}</span>
                       </span>
                       <span className="shrink-0 text-[14px] leading-5 font-medium text-ink/70">{dayLabel(c.created_at)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteConversation(c)}
+                      disabled={deleting === c.id}
+                      aria-label={`Delete conversation “${c.title}”`}
+                      title="Delete conversation"
+                      className="shrink-0 grid place-items-center size-8 rounded-[8px] border-2 border-transparent text-[18px] leading-none font-semibold text-ink/60 transition-colors hover:border-ink hover:bg-sand/40 hover:text-ink focus-visible:border-ink disabled:opacity-50"
+                    >
+                      ×
                     </button>
                   </RevealItem>
                 ))}
@@ -443,6 +510,7 @@ export default function HelpPage() {
       </div>
 
       <Policies />
+      {confirmUi}
     </div>
   );
 }
@@ -478,6 +546,20 @@ const POLICIES: { id: string; title: string; points: string[] }[] = [
 ];
 
 function Policies() {
+  // `:target` doesn't update on client-side navigation (/help#terms from the landing footer), so
+  // track the hash ourselves: scroll the card into view and outline it.
+  const [target, setTarget] = useState<string | null>(null);
+  useEffect(() => {
+    const sync = () => {
+      const id = window.location.hash.slice(1);
+      if (!POLICIES.some((p) => p.id === id)) return setTarget(null);
+      setTarget(id);
+      requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    };
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
   return (
     <section aria-labelledby="policies-title" className="mt-16 flex flex-col gap-6">
       <div className="section-head">
@@ -487,7 +569,11 @@ function Policies() {
       </div>
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         {POLICIES.map((p) => (
-          <article key={p.id} id={p.id} className="card p-[22px] scroll-mt-28 target:outline-[3px] target:outline-slate target:outline-offset-4">
+          <article
+            key={p.id}
+            id={p.id}
+            className={`card p-[22px] scroll-mt-28 target:outline-[3px] target:outline-slate target:outline-offset-4 ${target === p.id ? "outline-[3px] outline-slate outline-offset-4" : ""}`}
+          >
             <h3 className="text-[22px] leading-8 font-semibold">{p.title}</h3>
             <ul className="mt-3 flex flex-col gap-2.5 text-[14px] leading-[22px] text-ink/85">
               {p.points.map((t) => (
@@ -520,19 +606,32 @@ const chipClass =
 const chipIn = (j: number) => ({ animation: `rise 280ms cubic-bezier(0.22, 1, 0.36, 1) ${220 + Math.min(j, 7) * 60}ms backwards` });
 
 /** Avatar + bubble + chips; the row wrapper (and its entrance) lives in the message list. */
-function AssistantMessage({ message, heatmapHref, live }: { message: ChatMessage; heatmapHref: (pin: string) => string; live: boolean }) {
+function AssistantMessage({
+  message,
+  heatmapHref,
+  live,
+  aiConfigured,
+}: {
+  message: LiveMessage;
+  heatmapHref: (pin: string) => string;
+  live: boolean;
+  aiConfigured: boolean | undefined;
+}) {
   const pins = pincodesIn(message.content);
   const actions = (message.actions ?? []).filter((a) => isSafeActionPath(a.path) && typeof a.label === "string" && a.label.trim());
+  const offline = message.source === "fallback";
+  const notes = [
+    message.evidence?.length > 0 ? `Grounded in ${message.evidence.length} figure${message.evidence.length === 1 ? "" : "s"} from your account` : null,
+    offline ? (aiConfigured ? "Offline assistant — the AI service didn't answer, so built-in rules replied" : "Offline assistant — AI key not configured") : null,
+  ].filter(Boolean);
   return (
     <>
       <Avatar />
       <div className="flex flex-col gap-3 min-w-0">
         <div className="rounded-[16px] bg-sand p-4 text-[16px] leading-[26px] text-ink whitespace-pre-wrap break-words">
           {message.content}
-          {message.evidence?.length > 0 && (
-            <p className="mt-2 pt-1.5 border-t border-ink/20 text-[12px] leading-4 text-ink/70">
-              Based on {message.evidence.length} stored check result{message.evidence.length === 1 ? "" : "s"}
-            </p>
+          {notes.length > 0 && (
+            <p className="mt-2 pt-1.5 border-t border-ink/20 text-[12px] leading-4 text-ink/70">{notes.join(" · ")}</p>
           )}
         </div>
         {(pins.length > 0 || actions.length > 0) && (

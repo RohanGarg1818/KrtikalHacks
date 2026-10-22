@@ -4,6 +4,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useApi } from "@/lib/api";
+import { buildProductTrie } from "@/lib/trie";
 import type { Me, Plans } from "@/lib/types";
 import AddProductDialog from "@/components/AddProductDialog";
 import { CardSkeleton, Empty, ErrorCard, Skeleton, Sticker } from "@/components/ui";
@@ -35,12 +36,6 @@ function countBy(list: Card[]) {
   const c: Record<FilterKey, number> = { "": list.length, attention: 0, healthy: 0, paused: 0, new: 0 };
   for (const p of list) c[productState(p)]++;
   return c;
-}
-
-/** Client-side search over the one `/products` response (name, brand, search query). */
-function matches(p: Card, term: string) {
-  const t = term.toLowerCase();
-  return [p.name, p.brand, p.search_query].some((v) => v?.toLowerCase().includes(t));
 }
 
 export default function ProductsPage() {
@@ -76,13 +71,30 @@ function ProductsView() {
   const plans = useApi<Plans>("/plans");
 
   const everything = useMemo(() => data ?? [], [data]);
-  const searched = useMemo(() => (term ? everything.filter((p) => matches(p, term)) : everything), [everything, term]);
+  // Client-side search over the one `/products` response: every word of the query must prefix-match
+  // a word of the name, brand or search query ("amul but" → "Amul Butter 500g").
+  const trie = useMemo(() => buildProductTrie(everything), [everything]);
+  const searched = useMemo(() => {
+    if (!term) return everything;
+    const byId = new Map(everything.map((p) => [p.id, p]));
+    return trie.search(term).flatMap((id) => byId.get(id) ?? []);
+  }, [everything, trie, term]);
   const filtered = useMemo(() => (filter ? searched.filter((p) => productState(p) === filter) : searched), [searched, filter]);
   const totals = countBy(everything);
   const counts = countBy(searched);
   const platformCount = new Set(everything.flatMap(platformsOf)).size;
   const planName = me.data?.plan ?? plans.data?.current;
+  // Plan pincode limits apply per product, so compare the busiest product with them.
   const planLimit = plans.data?.plans.find((p) => p.plan === planName)?.pincodes;
+  const busiest = me.data?.usage.max_pincodes_per_product;
+  const pincodeCaption =
+    plans.data && me.data
+      ? planLimit != null
+        ? `Up to ${planLimit} per product on your plan${busiest != null ? ` · busiest uses ${busiest}` : ""}`
+        : "Unlimited pincodes on your plan"
+      : me.error || plans.error
+        ? "Plan details unavailable"
+        : " ";
   const visibleFilters = FILTERS.filter((f) => f.key !== "new" || totals.new > 0 || filter === "new");
 
   const rows = useMemo(() => {
@@ -120,14 +132,16 @@ function ProductsView() {
           <p className="text-[16px] leading-[22px]">
             {data
               ? `${totals[""]} product${totals[""] === 1 ? "" : "s"} tracked across ${platformCount} platform${platformCount === 1 ? "" : "s"}.`
-              : "Loading your catalogue…"}
+              : error
+                ? "Couldn't load your catalogue."
+                : "Loading your catalogue…"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-[15px]">
           {totals.attention > 0 && (
-            <Sticker className="text-[13px] leading-[19.5px] tracking-[0.65px] px-4 py-2 rounded-[8px]">{totals.attention} need attention</Sticker>
+            <Sticker>{totals.attention} need attention</Sticker>
           )}
-          <button className="btn btn-primary px-[26px] py-[14px] text-[15px] leading-[22.5px]" onClick={() => setAdding(true)}>
+          <button className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
             <img src={`${A}/imgContainer.svg`} alt="" width={13.083} height={13.083} />
             Add product
           </button>
@@ -136,14 +150,15 @@ function ProductsView() {
 
       {/* Summary tiles */}
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-        <Tile tone="bg-sage text-ink" eyebrow="Healthy" value={data ? totals.healthy : null} caption="Stock and price on track" />
-        <Tile tone="bg-sand text-ink" eyebrow="Need attention" value={data ? totals.attention : null} caption="Out of stock or price gap" />
+        <Tile tone="bg-sage text-ink" eyebrow="Healthy" value={data ? totals.healthy : null} failed={!!error && !data} caption="Stock and price on track" />
+        <Tile tone="bg-sand text-ink" eyebrow="Need attention" value={data ? totals.attention : null} failed={!!error && !data} caption="Out of stock or price gap" />
         <Tile
           tone="bg-slate text-linen"
           muted="text-linen/90"
           eyebrow="Tracked pincodes"
           value={me.data ? me.data.usage.pincodes : null}
-          caption={plans.data && me.data ? (planLimit != null ? `Of ${planLimit} on your plan` : "Unlimited on your plan") : " "}
+          failed={!!me.error && !me.data}
+          caption={pincodeCaption}
         />
       </section>
 
@@ -220,13 +235,30 @@ function ProductsView() {
         <ErrorCard error={error} onRetry={() => mutate()} />
       ) : !data ? (
         <CardSkeleton rows={6} />
-      ) : rows.length === 0 ? (
-        <Empty title="No products match">
-          {term || filter ? "Try another filter or search." : "Add your first product to start tracking it."}
+      ) : everything.length === 0 ? (
+        <Empty title="Track your first product">
+          Add a product with its search query, pick the pincodes you sell in, and ShelfSense checks its stock and price on
+          every quick-commerce app.
           <div>
             <button className="btn btn-primary btn-sm mt-4" onClick={() => setAdding(true)}>
-              Add product
+              Add your first product
             </button>
+          </div>
+        </Empty>
+      ) : rows.length === 0 ? (
+        <Empty title="No products match">
+          {term && filter ? "Nothing matches this search and filter." : term ? `Nothing matches “${term}”.` : "No products in this filter right now."}
+          <div className="flex flex-wrap justify-center gap-3 mt-4">
+            {term && (
+              <button className="btn btn-ghost btn-sm" onClick={clearSearch}>
+                Clear search
+              </button>
+            )}
+            {filter && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setFilter("")}>
+                Show all products
+              </button>
+            )}
           </div>
         </Empty>
       ) : (
@@ -245,13 +277,16 @@ function ProductsView() {
           {/* Pagination */}
           <section className="flex flex-wrap items-center justify-between gap-4 pt-1">
             <p className="text-[15px] leading-[22.5px] font-medium">
-              Showing {shown.length} of {rows.length} product{rows.length === 1 ? "" : "s"}
+              Showing {current * PAGE_SIZE + 1}–{current * PAGE_SIZE + shown.length} of {rows.length} product{rows.length === 1 ? "" : "s"}
             </p>
-            <div className="flex items-center gap-3">
-              <button className="btn btn-ghost px-[18px] py-[10px] text-[14px] leading-[21px]" disabled={current === 0} onClick={() => setPage(current - 1)}>
+            <div className={`flex items-center gap-3 ${pages > 1 ? "" : "hidden"}`}>
+              <span className="text-[14px] font-medium text-ink/75">
+                Page {current + 1} of {pages}
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled={current === 0} onClick={() => setPage(current - 1)}>
                 Previous
               </button>
-              <button className="btn btn-ghost px-[18px] py-[10px] text-[14px] leading-[21px]" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
+              <button className="btn btn-ghost btn-sm" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
                 Next
               </button>
             </div>
@@ -271,11 +306,29 @@ function ProductsView() {
   );
 }
 
-function Tile({ tone, muted = "", eyebrow, value, caption }: { tone: string; muted?: string; eyebrow: string; value: number | null; caption: string }) {
+function Tile({
+  tone,
+  muted = "",
+  eyebrow,
+  value,
+  caption,
+  failed,
+}: {
+  tone: string;
+  muted?: string;
+  eyebrow: string;
+  value: number | null;
+  caption: string;
+  failed?: boolean;
+}) {
   return (
     <div className={`${tone} border-2 border-ink rounded-[20px] shadow-[6px_6px_0_var(--ink)] h-[200px] p-6 flex flex-col min-w-0`}>
       <p className={`text-[14px] leading-[21px] font-semibold tracking-[0.7px] uppercase ${muted}`}>{eyebrow}</p>
-      {value == null ? (
+      {value == null && failed ? (
+        <p className="font-display text-[72px] leading-[72px] mt-4" aria-label="Unavailable">
+          —
+        </p>
+      ) : value == null ? (
         <Skeleton className="h-[72px] w-20 mt-4 opacity-30" />
       ) : (
         <p className="font-display text-[72px] leading-[72px] mt-4">{value}</p>

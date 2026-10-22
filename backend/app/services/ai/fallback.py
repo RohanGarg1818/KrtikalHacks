@@ -10,14 +10,13 @@ import re
 
 from .base import (
     AlertRuleOut,
-    ChatAction,
-    ChatEvidence,
     ChatOut,
     RecommendationCandidate,
     RecommendOut,
     ReviewsOut,
     SummaryOut,
 )
+from .chat_router import answer_chat
 
 _PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _BELOW_RE = re.compile(r"below\s+(\d+(?:\.\d+)?)")
@@ -34,29 +33,6 @@ _NOT_AN_AREA = {"any", "all", "every", "some", "a", "the"}
 
 def _fmt_money(value: float | None) -> str:
     return "n/a" if value is None else f"₹{value:.2f}"
-
-
-def guarded_price_target(context: dict) -> float | None:
-    """Rival-matching price clamped to the product's pricing rules.
-
-    None when the clamped price would not actually lower the current price.
-    """
-    current = context.get("avg_price")
-    rival = context.get("cheapest_rival")
-    if current is None or rival is None:
-        return None
-    pricing = context.get("pricing") or {}
-    bounds = [float(rival)]
-    if pricing.get("floor_price") is not None:
-        bounds.append(float(pricing["floor_price"]))
-    if pricing.get("cost_price") is not None and pricing.get("min_margin_pct") is not None:
-        bounds.append(
-            float(pricing["cost_price"]) * (1 + float(pricing["min_margin_pct"]) / 100)
-        )
-    if pricing.get("max_change_pct") is not None:
-        bounds.append(float(current) * (1 - float(pricing["max_change_pct"]) / 100))
-    target = round(max(bounds), 2)
-    return target if target < float(current) - 0.005 else None
 
 
 def parse_rule_areas(text: str) -> tuple[list[str], list[str]] | None:
@@ -85,39 +61,6 @@ def _gap_pct(context: dict) -> float | None:
     if avg_price is None or rival is None or rival == 0:
         return None
     return round((avg_price / rival - 1) * 100, 1)
-
-
-def _portfolio_answer(
-    portfolio: list[dict], text: str
-) -> tuple[str, list[ChatEvidence], list[ChatAction]] | None:
-    """Stock / price / heatmap answers covering every product, one line each."""
-    wants_stock = any(k in text for k in ("stock", "oos", "out of", "availability", "heatmap", "area"))
-    wants_price = any(k in text for k in ("price", "cost", "expensive", "cheap"))
-    if not (wants_stock or wants_price):
-        return None
-    lines: list[str] = []
-    evidence: list[ChatEvidence] = []
-    for item in portfolio:
-        name = item["product_name"]
-        bits: list[str] = []
-        if wants_stock:
-            bits.append(f"{item.get('in_stock') or 0} of {item.get('total_pins') or 0} pins in stock")
-            oos = item.get("oos_pins") or []
-            bits.append("out of stock in " + ", ".join(oos[:5]) if oos else "no stock-outs")
-        if wants_price:
-            avg, rival = item.get("avg_price"), item.get("cheapest_rival")
-            price = f"avg {_fmt_money(avg)}"
-            if rival is not None:
-                price += f" vs cheapest rival {_fmt_money(rival)}"
-            bits.append(price)
-        lines.append(f"• {name}: " + "; ".join(bits) + ".")
-        evidence.append(ChatEvidence(metric=f"in_stock:{name}"[:60], value=item.get("in_stock")))
-    worst = max(portfolio, key=lambda item: len(item.get("oos_pins") or []))
-    actions = [
-        ChatAction(label=f"Open {worst['product_name'][:30]} heatmap", path=f"/heatmap?product={worst['product_id']}")
-    ] if worst.get("oos_pins") else []
-    header = f"Across your {len(portfolio)} products:"
-    return "\n".join([header, *lines]), evidence, actions
 
 
 class FallbackAIProvider:
@@ -179,39 +122,20 @@ class FallbackAIProvider:
                         "Recovering availability in these pins wins back "
                         "quick-commerce sales before rivals fill the gap."
                     ),
-                    evidence={"oos_pins": oos_pins, "platforms": platforms},
+                    evidence={"kind": "restock", "oos_pins": oos_pins, "platforms": platforms},
                 )
             )
-        gap = _gap_pct(context)
-        if gap is not None and gap >= 5:
-            target = guarded_price_target(context)
-            rival_text = _fmt_money(context.get("cheapest_rival"))
-            if target is not None:
-                action = (
-                    f"Move your price to {_fmt_money(target)} (from "
-                    f"{_fmt_money(context.get('avg_price'))}); you are {gap}% above "
-                    f"the cheapest rival ({rival_text})."
-                )
-            else:
-                action = (
-                    f"Review pricing: your average is {gap}% above the cheapest "
-                    f"rival ({rival_text}), and your pricing rules leave no room "
-                    "to match it."
-                )
+        # Price advice comes only from the smart threshold's verdict
+        # (services/price_thresholds.py): adjust -> a bounded price move,
+        # hold -> a "don't price-match" margin warning, silent -> nothing.
+        signal = context.get("price_signal") or {}
+        if signal.get("outcome") in ("adjust", "hold") and signal.get("action_text"):
             candidates.append(
                 RecommendationCandidate(
-                    priority="medium",
-                    action_text=action,
-                    impact_text=(
-                        "Closing the gap within your floor and margin rules can "
-                        "lift conversion on price-sensitive pins."
-                    ),
-                    evidence={
-                        "avg_price": context.get("avg_price"),
-                        "cheapest_rival": context.get("cheapest_rival"),
-                        "gap_pct": gap,
-                        "proposed_price": target,
-                    },
+                    priority=signal.get("priority") or "medium",
+                    action_text=signal["action_text"],
+                    impact_text=signal.get("impact_text") or "",
+                    evidence=dict(signal.get("evidence") or {}),
                 )
             )
         rating = context.get("rating")
@@ -224,7 +148,7 @@ class FallbackAIProvider:
                         "reviews for recurring quality or delivery complaints."
                     ),
                     impact_text="Improving ratings protects visibility in platform ranking.",
-                    evidence={"rating": rating},
+                    evidence={"kind": "rating", "rating": rating},
                 )
             )
         failed = context.get("failed_pins") or 0
@@ -237,7 +161,7 @@ class FallbackAIProvider:
                         "to fill the gaps in the heatmap."
                     ),
                     impact_text="Failed checks leave those pins without fresh data.",
-                    evidence={"failed_pins": failed},
+                    evidence={"kind": "recheck", "failed_pins": failed},
                 )
             )
         stale = context.get("stale_pins") or 0
@@ -250,10 +174,11 @@ class FallbackAIProvider:
                         "to restore heatmap confidence."
                     ),
                     impact_text="Fresh data keeps recommendations and alerts accurate.",
-                    evidence={"stale_pins": stale},
+                    evidence={"kind": "recheck", "stale_pins": stale},
                 )
             )
-        if not candidates:
+        # "No urgent issues" would contradict advice that is still pending.
+        if not candidates and not context.get("recommendation_preview"):
             candidates.append(
                 RecommendationCandidate(
                     priority="low",
@@ -262,7 +187,7 @@ class FallbackAIProvider:
                         "cadence to maintain coverage."
                     ),
                     impact_text="Steady monitoring prevents surprise stockouts.",
-                    evidence={"avg_price": context.get("avg_price")},
+                    evidence={"kind": "other", "avg_price": context.get("avg_price")},
                 )
             )
         return RecommendOut(recommendations=candidates[:3])
@@ -282,7 +207,10 @@ class FallbackAIProvider:
             loves.append("Strong average product rating")
         if context.get("oos_pins"):
             complaints.append("Out-of-stock pockets in specific pincodes")
-        if gap is not None and gap >= 5:
+        threshold = (
+            (context.get("price_signal") or {}).get("evidence") or {}
+        ).get("threshold_pct") or 5
+        if gap is not None and gap >= threshold:
             complaints.append("Priced above rivals on some platforms")
         if rating is not None and rating < 4.2:
             complaints.append("Mixed ratings feedback from customers")
@@ -294,112 +222,7 @@ class FallbackAIProvider:
         self, context: dict, message: str, history: list[dict]
     ) -> ChatOut:
         del history  # the rule-based answer only needs the current message
-        text = message.lower()
-        name = context.get("product_name", "your product")
-        domain_keywords = (
-            "price", "stock", "oos", "out of", "availability", "heatmap",
-            "pin", "pincode", "run", "check", "weekly", "competitor", "rival",
-            "summary", "recommend", "product", "credit", "rating", "eta",
-            "delivery", "shelf", "dashboard", "first", "today", "priority",
-            "left", "remaining", "plan",
-        )
-        if not any(keyword in text for keyword in domain_keywords):
-            return ChatOut(
-                reply=(
-                    "I can only help with your ShelfSense data — prices, stock, "
-                    "heatmaps, check runs, and weekly insights. Try asking about "
-                    f"{name}'s price gap or out-of-stock pins."
-                )
-            )
-        evidence: list[ChatEvidence] = []
-        actions: list[ChatAction] = []
-        product_id = context.get("product_id")
-        parts: list[str] = []
-        portfolio = context.get("portfolio") or []
-        if len(portfolio) > 1:
-            answered = _portfolio_answer(portfolio, text)
-            if answered is not None:
-                reply, portfolio_evidence, portfolio_actions = answered
-                return ChatOut(reply=reply, evidence=portfolio_evidence, actions=portfolio_actions)
-        if any(k in text for k in ("price", "cost", "expensive", "cheap")):
-            avg_price = context.get("avg_price")
-            rival = context.get("cheapest_rival")
-            gap = _gap_pct(context)
-            parts.append(
-                f"{name} averages {_fmt_money(avg_price)}; the cheapest rival "
-                f"is {_fmt_money(rival)}."
-            )
-            if gap is not None:
-                parts.append(f"That is a {gap}% gap versus the rival price.")
-            evidence.append(ChatEvidence(metric="avg_price", value=avg_price))
-            evidence.append(ChatEvidence(metric="cheapest_rival", value=rival))
-        if any(k in text for k in ("stock", "oos", "out of", "availability")):
-            parts.append(
-                f"{name}: {context.get('in_stock', 0)} of {context.get('total_pins', 0)} "
-                "checked pins are in stock."
-            )
-            oos_pins = context.get("oos_pins", [])
-            if oos_pins:
-                parts.append("Out of stock in: " + ", ".join(oos_pins[:5]) + ".")
-            evidence.append(
-                ChatEvidence(metric="in_stock", value=context.get("in_stock"))
-            )
-        if any(k in text for k in ("heatmap", "zone", "area")):
-            parts.append(
-                f"Heatmap: {context.get('in_stock', 0)} in stock, "
-                f"{len(context.get('oos_pins', []))} out of stock, "
-                f"{context.get('price_gap_pins', 0)} price-gap, "
-                f"{context.get('stale_pins', 0)} stale pins."
-            )
-            if product_id:
-                actions.append(
-                    ChatAction(label="Open heatmap", path=f"/heatmap?product={product_id}")
-                )
-        if any(k in text for k in ("weekly", "week", "trend", "compare")):
-            this_price = context.get("this_week_avg_price")
-            last_price = context.get("last_week_avg_price")
-            parts.append(
-                f"Weekly average price moved from {_fmt_money(last_price)} to "
-                f"{_fmt_money(this_price)}."
-            )
-            evidence.append(
-                ChatEvidence(metric="this_week_avg_price", value=this_price)
-            )
-        if any(k in text for k in ("recommend", "should", "advice", "next", "first", "priority")):
-            top = (context.get("recommendation_preview") or "").strip()
-            parts.append(top or "Run a fresh check to generate recommendations.")
-            if product_id:
-                actions.append(
-                    ChatAction(
-                        label="View recommendations",
-                        path=f"/products/{product_id}",
-                    )
-                )
-        if any(k in text for k in ("credit", "left", "remaining", "plan")):
-            used = context.get("credits_used_today", 0)
-            budget = context.get("daily_credit_budget")
-            plan = context.get("plan", "free")
-            parts.append(
-                f"You've used {used} credits today on the {plan.title()} plan"
-                + (f"; {max(budget - used, 0)} of {budget} remain." if budget else " with no daily limit.")
-                + " Each Zepto or Instamart check is a TinyFish agent run and uses one"
-                " credit; Amazon and Flipkart page reads are free."
-            )
-            evidence.append(ChatEvidence(metric="credits_used_today", value=used))
-        elif any(k in text for k in ("run", "check", "scan")):
-            parts.append(
-                "Start a check from the product page: pick platforms and "
-                "pincodes, then launch; progress streams live and the heatmap "
-                "updates when it finishes."
-            )
-        if not parts:
-            parts.append(
-                f"{name}: {_fmt_money(context.get('avg_price'))} average, "
-                f"{context.get('in_stock', 0)}/{context.get('total_pins', 0)} "
-                "pins in stock."
-            )
-            evidence.append(ChatEvidence(metric="avg_price", value=context.get("avg_price")))
-        return ChatOut(reply=" ".join(parts), actions=actions, evidence=evidence)
+        return answer_chat(context, message)
 
     async def parse_alert_rule(self, text: str) -> AlertRuleOut:
         lowered = text.lower()

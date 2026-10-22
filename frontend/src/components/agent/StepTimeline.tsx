@@ -87,7 +87,13 @@ export default function StepTimeline({
                   {KIND_ICON[s.kind] ?? "·"}
                 </span>
                 {s.label}
-                {state !== "current" && s.ms > 0 && <span className="text-ink/60 font-normal tabular-nums"> · {duration(s.ms)}</span>}
+                {/* `ms` is time since the session started, not this step's own duration. */}
+                {state !== "current" && s.ms > 0 && (
+                  <span className="text-ink/60 font-normal tabular-nums" title="Time since the agent session started">
+                    {" "}
+                    · +{duration(s.ms)}
+                  </span>
+                )}
               </p>
               {s.detail && (
                 <p className={`text-[12px] leading-[18px] text-ink/75 break-words ${s.kind === "session" ? "font-mono" : ""} pl-5`}>{s.detail}</p>

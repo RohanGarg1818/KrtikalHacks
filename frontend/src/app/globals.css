@@ -214,15 +214,15 @@ body {
     animation: shimmer 1.3s infinite linear;
   }
 
-  .stagger > * { opacity: 0; animation: rise 380ms ease forwards; }
+  .stagger > * { opacity: 0; animation: rise 300ms cubic-bezier(0.22, 1, 0.36, 1) forwards; }
   .stagger > *:nth-child(1) { animation-delay: 0ms; }
-  .stagger > *:nth-child(2) { animation-delay: 60ms; }
-  .stagger > *:nth-child(3) { animation-delay: 120ms; }
-  .stagger > *:nth-child(4) { animation-delay: 180ms; }
-  .stagger > *:nth-child(5) { animation-delay: 240ms; }
-  .stagger > *:nth-child(6) { animation-delay: 300ms; }
-  .stagger > *:nth-child(7) { animation-delay: 360ms; }
-  .stagger > *:nth-child(n + 8) { animation-delay: 420ms; }
+  .stagger > *:nth-child(2) { animation-delay: 40ms; }
+  .stagger > *:nth-child(3) { animation-delay: 80ms; }
+  .stagger > *:nth-child(4) { animation-delay: 120ms; }
+  .stagger > *:nth-child(5) { animation-delay: 160ms; }
+  .stagger > *:nth-child(6) { animation-delay: 200ms; }
+  .stagger > *:nth-child(7) { animation-delay: 240ms; }
+  .stagger > *:nth-child(n + 8) { animation-delay: 280ms; }
 
   .dot-typing span {
     display: inline-block;
@@ -238,9 +238,9 @@ body {
 }
 
 @keyframes shimmer { to { transform: translateX(100%); } }
-@keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-5px); opacity: 1; } }
-@keyframes pin-pop { 0% { transform: scale(0); } 70% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes pin-pop { 0% { transform: scale(0.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
 @keyframes marquee { to { transform: translateX(-50%); } }
 
 /* Status pins: sage + check, linen dashed + ✕, sand + ₹, faded when stale. */
@@ -255,11 +255,11 @@ body {
   font-size: 13px;
   color: var(--ink);
   box-shadow: 2px 2px 0 var(--ink);
-  animation: pin-pop 420ms cubic-bezier(.2,.9,.3,1.3) both;
+  animation: pin-pop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
   transition: transform 140ms ease;
   cursor: pointer;
 }
-.ss-pin:hover { transform: scale(1.18) translateY(-2px); }
+@media (hover: hover) { .ss-pin:hover { transform: scale(1.12) translateY(-2px); } }
 .ss-pin.in_stock { background: var(--sage); color: var(--linen); }
 .ss-pin.out_of_stock { background: var(--linen); border-style: dashed; box-shadow: none; }
 .ss-pin.price_gap { background: var(--sand); }
@@ -277,7 +277,7 @@ body {
   margin-bottom: 8px;
 }
 .leaflet-control-zoom { border: none !important; }
-.ss-hotzone { transform-box: fill-box; transform-origin: center; animation: hot-in 700ms cubic-bezier(.2,.9,.3,1.2) both; }
+.ss-hotzone { transform-box: fill-box; transform-origin: center; animation: hot-in 500ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 @keyframes hot-in { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
 
 /* TinyFish agent console: spinner for the current step, live dot, step entry. */
@@ -393,70 +393,103 @@ h1 { letter-spacing: -0.035em; }
   box-shadow: var(--shadow-xs);
 }
 
-.card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: var(--shadow-sm);
+/* Layered (like .input below) so utilities on these primitives still win: a tone
+   (bg-sand on a card), a height (h-12) or padding (px-[26px]) on a button. */
+@layer components {
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* One control-height scale: .btn 48px, .btn-sm and .pill 40px (touch-target floor). */
+  .btn {
+    min-height: 48px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 11px 20px;
+    font-size: 15px;
+    line-height: 24px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .btn-sm { min-height: 40px; padding: 7px 14px; font-size: 13.5px; line-height: 20px; border-radius: 9px; }
+  .btn-primary, .btn-ink {
+    background: var(--ink);
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(13, 27, 42, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+  .btn-ghost { background: var(--surface); color: var(--ink); border-color: var(--line-strong); }
+  .btn-sand { background: var(--sand); color: var(--ink); border-color: rgba(13, 27, 42, 0.06); }
+  .btn-sage { background: var(--sage); color: #fff; }
+
+  .pill {
+    min-height: 40px;
+    border: 1px solid var(--line-strong);
+    border-radius: 9999px;
+    padding: 7px 16px;
+    font-size: 13.5px;
+    line-height: 20px;
+    background: var(--surface);
+  }
+  .pill[data-active="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+  /* Buttons, pills and clickable cards share the soft lift of .press (the hard
+     ink offset they @apply from the original theme no longer matches anything). */
+  .btn, .pill, .card-lift, a.card, button.card {
+    transition: transform 160ms var(--ease), box-shadow 160ms var(--ease), background-color 160ms ease, border-color 160ms ease;
+  }
+  .btn-ghost, .btn-sand, .btn-sage, .pill, .card-lift, a.card, button.card { box-shadow: var(--shadow-sm); }
+  @media (hover: hover) {
+    :is(.btn, .pill, .card-lift, a.card, button.card):hover:not(:disabled, [aria-disabled="true"]) {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+    .btn-primary:hover:not(:disabled), .btn-ink:hover:not(:disabled) { background: #1c2c44; }
+  }
+  :is(.btn, .pill, .card-lift, a.card, button.card):active:not(:disabled, [aria-disabled="true"]) {
+    transform: scale(0.97);
+    box-shadow: var(--shadow-xs);
+  }
+  /* Large surfaces barely give: 0.97 on a 400px card reads as a jump. */
+  :is(.card-lift, a.card, button.card):active:not(:disabled, [aria-disabled="true"]) { transform: scale(0.99); }
 }
 
-.btn {
-  border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 11px 20px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+/* Layered so padding/height utilities on an input (e.g. pl-[42px] beside an icon) still win. */
+@layer components {
+  .input {
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    padding: 11px 14px;
+    box-shadow: var(--shadow-xs);
+    transition: box-shadow 180ms ease, border-color 180ms ease;
+  }
+  .input:focus { border-color: var(--slate); box-shadow: 0 0 0 4px rgba(61, 90, 128, 0.16); }
 }
-.btn-sm { padding: 7px 14px; font-size: 13.5px; border-radius: 9px; }
-.btn-primary, .btn-ink {
-  background: var(--ink);
-  color: #fff;
-  box-shadow: 0 1px 2px rgba(13, 27, 42, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-@media (hover: hover) {
-  .btn-primary:hover:not(:disabled), .btn-ink:hover:not(:disabled) { background: #1c2c44; }
-}
-.btn-ghost { background: var(--surface); color: var(--ink); border-color: var(--line-strong); }
-.btn-sand { background: var(--sand); color: var(--ink); border-color: rgba(13, 27, 42, 0.06); }
-.btn-sage { background: var(--sage); color: #fff; }
 
-.pill {
-  border: 1px solid var(--line-strong);
-  border-radius: 9999px;
-  padding: 7px 16px;
-  font-size: 13.5px;
-  background: var(--surface);
+@layer components {
+  .sticker {
+    transform: none;
+    border: 1px solid rgba(13, 27, 42, 0.08);
+    border-radius: 9999px;
+    padding: 4px 12px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    box-shadow: none;
+  }
+  .chip { border: 1px solid var(--line-strong); font-weight: 550; }
+  .eyebrow, .label { letter-spacing: 0.08em; font-weight: 600; }
+  .eyebrow { font-size: 12px; color: var(--slate); }
+  .section-head { border-bottom: 1px solid var(--line); }
+  .tab::after { height: 2px; background: var(--ink); bottom: -6px; }
+  .tab[data-active="true"] { color: var(--ink); }
+  .skeleton { background: #ecebe6; }
+  /* On a toned surface (dark tile) an eyebrow follows the surface's text colour. */
+  :is(.bg-ink, .bg-slate, .bg-deep, .bg-sage) .eyebrow { color: inherit; }
 }
-.pill[data-active="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
-
-.input {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 11px 14px;
-  box-shadow: var(--shadow-xs);
-  transition: box-shadow 180ms ease, border-color 180ms ease;
-}
-.input:focus { border-color: var(--slate); box-shadow: 0 0 0 4px rgba(61, 90, 128, 0.16); }
-
-.sticker {
-  transform: none;
-  border: 1px solid rgba(13, 27, 42, 0.08);
-  border-radius: 9999px;
-  padding: 4px 12px;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  box-shadow: none;
-}
-.chip { border: 1px solid var(--line-strong); font-weight: 550; }
-.eyebrow, .label { letter-spacing: 0.08em; font-weight: 600; }
-.eyebrow { font-size: 12px; color: var(--slate); }
-.section-head { border-bottom: 1px solid var(--line); }
-.tab::after { height: 2px; background: var(--ink); bottom: -6px; }
-.tab[data-active="true"] { color: var(--ink); }
-.skeleton { background: #ecebe6; }
 
 /* Map pins: white ring + soft drop, status colour stays the signal. */
 .ss-pin {

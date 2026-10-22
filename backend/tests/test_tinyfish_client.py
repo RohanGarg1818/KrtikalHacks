@@ -170,7 +170,7 @@ async def test_failed_live_check_falls_back_to_cached_result(tmp_path, monkeypat
     }]))
     monkeypatch.setattr(demo_cache, "CACHE_PATH", cache)
     demo_cache.load_cache.cache_clear()
-    monkeypatch.setattr(demo_cache, "load_cache", lambda path=cache: tuple(json.loads(cache.read_text())))
+    monkeypatch.setattr(demo_cache, "load_cache", lambda path=cache: tuple(json.loads(cache.read_text(encoding="utf-8"))))
 
     class Blocked:
         mode = "live"
@@ -194,7 +194,7 @@ def test_amazon_parser_reads_real_fetch_output() -> None:
     from app.services.tinyfish.marketplace import parse_amazon
 
     page = parse_amazon(
-        (FIXTURES / "amazon_bhujia.txt").read_text(),
+        (FIXTURES / "amazon_bhujia.txt").read_text(encoding="utf-8"),
         "Haldiram's Delhi Bhujia, 200g : Amazon.in: Grocery & Gourmet Foods",
     )
     assert page.name == "Haldiram's Delhi Bhujia, 200g"
@@ -203,14 +203,14 @@ def test_amazon_parser_reads_real_fetch_output() -> None:
     assert page.delivery_fee == 60.0 and page.delivery_date is not None
     assert page.delivery_date.day == 20 and page.delivery_date.month == 11
 
-    gone = parse_amazon((FIXTURES / "amazon_unavailable.txt").read_text(), "Amul Taaza Pouch")
+    gone = parse_amazon((FIXTURES / "amazon_unavailable.txt").read_text(encoding="utf-8"), "Amul Taaza Pouch")
     assert gone.in_stock is False and gone.price is None
 
 
 def test_flipkart_parser_reads_real_fetch_output() -> None:
     from app.services.tinyfish.marketplace import parse_flipkart
 
-    page = parse_flipkart((FIXTURES / "flipkart_bhujia.txt").read_text(), "{TITLE} Price in India")
+    page = parse_flipkart((FIXTURES / "flipkart_bhujia.txt").read_text(encoding="utf-8"), "{TITLE} Price in India")
     assert page.name == "Haldiram's Plain Bhujia Sev (200 g)"
     assert page.price == 53.0 and page.mrp == 58.0
     assert page.in_stock is False  # the page's button said "Notify Me"
@@ -285,11 +285,11 @@ def test_gadget_pages_read_the_real_price_not_add_ons_or_ads() -> None:
     from app.services.tinyfish.marketplace import parse_amazon, parse_flipkart
     from app.services.tinyfish.pack import same_variant
 
-    amazon = parse_amazon((FIXTURES / "amazon_jbl_go3.txt").read_text(), "JBL Go 3 Wireless Portable Bluetooth Mini Speaker : Amazon.in")
+    amazon = parse_amazon((FIXTURES / "amazon_jbl_go3.txt").read_text(encoding="utf-8"), "JBL Go 3 Wireless Portable Bluetooth Mini Speaker : Amazon.in")
     assert amazon.price == 2849.05 and amazon.mrp == 3999.0 and amazon.in_stock is True  # not the ₹149 warranty plan
-    airpods = parse_amazon((FIXTURES / "amazon_airpods_unavailable.txt").read_text(), "Apple AirPods Pro 2")
+    airpods = parse_amazon((FIXTURES / "amazon_airpods_unavailable.txt").read_text(encoding="utf-8"), "Apple AirPods Pro 2")
     assert airpods.in_stock is False and airpods.price is None
-    flipkart = parse_flipkart((FIXTURES / "flipkart_jbl_go3.txt").read_text(), "Buy JBL GO 3 with IP67 Water and Dust Resistant 4.2 W Bluetooth Speaker")
+    flipkart = parse_flipkart((FIXTURES / "flipkart_jbl_go3.txt").read_text(encoding="utf-8"), "Buy JBL GO 3 with IP67 Water and Dust Resistant 4.2 W Bluetooth Speaker")
     assert flipkart.price == 2999.0 and flipkart.mrp == 3999.0  # not the ₹1,799 sponsored boAt ad
     assert same_variant("Xiaomi Power Bank 3i 20000mAh", "Gizmofreaks Pouch for Mi Power Bank 3i 20000mAh") is False
 
@@ -299,9 +299,9 @@ def test_flipkart_gadget_price_after_selected_variant_and_model_from_url() -> No
     from app.services.tinyfish.pack import same_variant
     from app.services.tinyfish.tinyfish_client import url_slug_words
 
-    mi = parse_flipkart((FIXTURES / "flipkart_mi_3i.txt").read_text(), "Mi 20000 mAh 18 W Power Bank Price in India")
+    mi = parse_flipkart((FIXTURES / "flipkart_mi_3i.txt").read_text(encoding="utf-8"), "Mi 20000 mAh 18 W Power Bank Price in India")
     assert mi.price == 3499.0 and mi.in_stock is True  # not an ad, not the ₹3,324 after-offer price
-    boat = parse_flipkart((FIXTURES / "flipkart_boat_141.txt").read_text(), "boAt Airdopes 141 Gen 2")
+    boat = parse_flipkart((FIXTURES / "flipkart_boat_141.txt").read_text(encoding="utf-8"), "boAt Airdopes 141 Gen 2")
     assert boat.price == 799.0 and boat.mrp == 3990.0 and boat.in_stock is False  # "Notify Me"
     slug = url_slug_words("https://www.flipkart.com/mi-3i-20000-mah-power-bank-fast-charging-18w/p/itmd42cbbe08e65e")
     assert same_variant("Xiaomi Power Bank 3i 20000mAh", f"Mi 20000 mAh 18 W Power Bank {slug}") is True

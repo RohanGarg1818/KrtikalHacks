@@ -26,9 +26,11 @@ from ..schemas.runs import (
     RunCreate,
     RunCreated,
     RunDetail,
+    RunEstimate,
     RunResponse,
     RunResultItem,
     RunSummary,
+    SkippedPlatform,
     TinyFishUsage,
 )
 from ..services.events import run_events
@@ -39,13 +41,18 @@ from ..services.plans import (
     limits_for,
     remaining_credits_today,
 )
-from ..services.runner import build_jobs, create_run, schedule_run
+from ..services.runner import FINISHED_STATUSES, create_run, plan_jobs, schedule_run
+from ..services.tinyfish.availability import (
+    APP_LABELS,
+    CHECK_STRATEGY,
+    credit_cost,
+    unavailable_reason,
+)
 from .media import local_media_path, screenshot_url_for
 from .products import get_owned_product, get_user_plan, has_active_run
 
 router = APIRouter(tags=["runs"])
 
-FINISHED_STATUSES = ("done", "failed")
 QUEUE_POLL_SECONDS = 15.0
 ACTIVE_RUN_CONFLICT = "A check run is already queued or running for this product"
 # Serialises check-then-create per product inside this process; the partial
@@ -136,6 +143,75 @@ async def finished_run_event(run_id: str) -> dict | None:
         return run_done_event(run_id, run)
 
 
+async def resolve_selection(
+    session: AsyncSession,
+    product_id: str,
+    platforms_in: list[str] | None,
+    pincodes_in: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    """Requested platforms/pincodes (default: the product's whole selection),
+    validated against what the product tracks."""
+    selection = list(
+        (
+            await session.scalars(
+                select(ProductPincode).where(ProductPincode.product_id == product_id)
+            )
+        ).all()
+    )
+    if not selection:
+        raise HTTPException(
+            status_code=422,
+            detail="Select pincodes and platforms for this product first",
+        )
+    available_platforms = {row.platform for row in selection}
+    available_pincodes = {row.pincode for row in selection}
+    platforms = sorted(set(platforms_in) if platforms_in else available_platforms)
+    pincodes = sorted(set(pincodes_in) if pincodes_in else available_pincodes)
+    unknown_platforms = sorted(set(platforms) - available_platforms)
+    if unknown_platforms:
+        raise HTTPException(
+            status_code=422,
+            detail="Platforms not selected for this product: "
+            + ", ".join(unknown_platforms),
+        )
+    unknown_pincodes = sorted(set(pincodes) - available_pincodes)
+    if unknown_pincodes:
+        raise HTTPException(
+            status_code=422,
+            detail="Pincodes not selected for this product: "
+            + ", ".join(unknown_pincodes),
+        )
+    return platforms, pincodes
+
+
+@router.get("/products/{product_id}/runs/estimate", response_model=RunEstimate)
+async def estimate_run(
+    product_id: str,
+    platforms: list[str] | None = Query(default=None),
+    pincodes: list[str] | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunEstimate:
+    """What `POST /products/{id}/runs` with the same selection would run and cost."""
+    product = await get_owned_product(session, user.id, product_id)
+    platforms, pincodes = await resolve_selection(session, product.id, platforms, pincodes)
+    plan = await plan_jobs(session, product, platforms, pincodes)
+    return RunEstimate(
+        jobs=len(plan.jobs),
+        credits=plan.credits,
+        agent_jobs=plan.agent_jobs,
+        platforms=sorted({job.platform for job in plan.jobs}),
+        pincodes=pincodes,
+        skipped_platforms=[
+            SkippedPlatform(platform=platform, reason=unavailable_reason(platform))
+            for platform in plan.skipped_platforms
+        ],
+        remaining_credits=await remaining_credits_today(
+            session, user.id, await get_user_plan(session, user.id)
+        ),
+    )
+
+
 @router.post(
     "/products/{product_id}/runs",
     response_model=RunCreated,
@@ -153,40 +229,12 @@ async def start_run(
         raise HTTPException(
             status_code=422, detail="Paused products cannot be checked"
         )
-    selection = list(
-        (
-            await session.scalars(
-                select(ProductPincode).where(ProductPincode.product_id == product_id)
-            )
-        ).all()
+    platforms, pincodes = await resolve_selection(
+        session,
+        product_id,
+        payload.platforms if payload else None,
+        payload.pincodes if payload else None,
     )
-    if not selection:
-        raise HTTPException(
-            status_code=422,
-            detail="Select pincodes and platforms for this product first",
-        )
-    available_platforms = {row.platform for row in selection}
-    available_pincodes = {row.pincode for row in selection}
-    platforms = sorted(
-        set(payload.platforms) if payload and payload.platforms else available_platforms
-    )
-    pincodes = sorted(
-        set(payload.pincodes) if payload and payload.pincodes else available_pincodes
-    )
-    unknown_platforms = sorted(set(platforms) - available_platforms)
-    if unknown_platforms:
-        raise HTTPException(
-            status_code=422,
-            detail="Platforms not selected for this product: "
-            + ", ".join(unknown_platforms),
-        )
-    unknown_pincodes = sorted(set(pincodes) - available_pincodes)
-    if unknown_pincodes:
-        raise HTTPException(
-            status_code=422,
-            detail="Pincodes not selected for this product: "
-            + ", ".join(unknown_pincodes),
-        )
     plan = await get_user_plan(session, user.id)
     enforce_pincode_limit(plan, len(pincodes))
 
@@ -194,7 +242,7 @@ async def start_run(
     async with lock:
         if await has_active_run(session, product_id):
             raise HTTPException(status_code=409, detail=ACTIVE_RUN_CONFLICT)
-        estimated = len(await build_jobs(session, product, platforms, pincodes))
+        estimated = (await plan_jobs(session, product, platforms, pincodes)).credits
         remaining = await remaining_credits_today(session, user.id, plan)
         if remaining is not None and estimated > remaining:
             raise HTTPException(
@@ -216,7 +264,11 @@ async def start_run(
             await session.rollback()
             raise HTTPException(status_code=409, detail=ACTIVE_RUN_CONFLICT) from None
     schedule_run(run.id, product_id=product.id, user_id=user.id, jobs=jobs)
-    return RunCreated(run_id=run.id, estimated_credits=len(jobs))
+    return RunCreated(
+        run_id=run.id,
+        estimated_credits=sum(credit_cost(job.platform) for job in jobs),
+        total_jobs=len(jobs),
+    )
 
 
 @router.get("/runs", response_model=list[RunSummary])
@@ -360,13 +412,16 @@ async def stream_run(
             while True:
                 try:
                     event = await asyncio.wait_for(
-                        queue.get(), timeout=QUEUE_POLL_SECONDS
+                        queue.get(), timeout=min(float(ping), QUEUE_POLL_SECONDS)
                     )
                 except TimeoutError:
                     final = await finished_run_event(run_id)
                     if final is not None:
                         yield sse_message(final)
                         return
+                    # A named heartbeat (not an SSE comment) so EventSource
+                    # clients can see the stream is alive while agents work.
+                    yield {"event": "ping", "data": json.dumps({"type": "ping"})}
                     continue
                 if event is None:
                     final = await finished_run_event(run_id)
@@ -476,18 +531,6 @@ async def tinyfish_usage(
     )
 
 
-APP_LABELS = {
-    "blinkit": "Blinkit",
-    "zepto": "Zepto",
-    "instamart": "Swiggy Instamart",
-    "amazon": "Amazon.in",
-    "flipkart": "Flipkart",
-}
-UNAVAILABLE_REASONS = {
-    "blinkit": "Blinkit blocks automated browsers, including TinyFish stealth mode",
-}
-
-
 @router.get("/tinyfish/apps", response_model=list[AppStatus])
 async def tinyfish_apps(
     user: User = Depends(get_current_user),
@@ -495,7 +538,6 @@ async def tinyfish_apps(
 ) -> list[AppStatus]:
     """Live / Cached / Unavailable status and check method for every app."""
     from ..services.tinyfish.demo_cache import load_cache
-    from ..services.tinyfish.tinyfish_client import CHECK_STRATEGY
 
     cached = {entry.get("platform") for entry in load_cache()}
     statuses: list[AppStatus] = []
@@ -503,8 +545,17 @@ async def tinyfish_apps(
         method = CHECK_STRATEGY.get(platform, "none")
         pincode_specific = method == "agent"
         if not settings.tinyfish_enabled and not settings.tinyfish_demo:
-            status_, detail = "simulated", "No TinyFish key: simulated results"
+            status_ = "simulated"
+            detail = (
+                "No TinyFish key: simulated agent, per pincode, 1 credit per check"
+                if method == "agent"
+                else "No TinyFish key: simulated Fetch read, listing-wide, free"
+            )
             method = "simulated"
+        elif settings.tinyfish_enabled and platform not in settings.live_platforms:
+            # The runner drops these jobs, so nothing (not even saved results) is shown.
+            status_ = "unavailable"
+            detail = f"Not available in live mode: {unavailable_reason(platform)}"
         elif settings.tinyfish_demo:
             if platform in cached:
                 status_, detail = "cached", "Demo mode: replaying saved live results"
@@ -519,11 +570,9 @@ async def tinyfish_apps(
             )
             if platform in cached:
                 detail += "; falls back to saved results if blocked"
-        elif platform in cached:
-            status_, detail = "cached", UNAVAILABLE_REASONS.get(platform, "Off for live checks") + "; showing saved results"
         else:
             status_ = "unavailable"
-            detail = UNAVAILABLE_REASONS.get(platform, "Not enabled in TINYFISH_LIVE_PLATFORMS")
+            detail = unavailable_reason(platform)
         statuses.append(
             AppStatus(
                 platform=platform,

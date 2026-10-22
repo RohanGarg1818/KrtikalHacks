@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useApi } from "@/lib/api";
-import { duration, platformLabel, rupees } from "@/lib/format";
+import { duration, etaLabel, platformLabel, rupees } from "@/lib/format";
 import type { Health, TinyFishMode } from "@/lib/types";
 import type { AgentJobState, RunState } from "@/lib/useRun";
 import { ModeBadge, PlatformMark, ScreenshotThumb, TruePriceBreakdown, jobTitle, whoLabel } from "./parts";
@@ -118,12 +118,14 @@ export default function AgentConsole({ run, names, title = "Agent console", repl
                 <>✕ {run.error}</>
               ) : (
                 <>
-                  ✓ Done — {run.completed - run.failed} succeeded{run.failed ? `, ${run.failed} failed` : ""}
-                  {run.status === "partial" ? " (partial)" : ""}
+                  {run.phase === "failed" ? "✕ Failed" : run.status === "partial" ? "! Partly done" : "✓ Done"} —{" "}
+                  {run.completed - run.failed} succeeded{run.failed ? `, ${run.failed} failed` : ""}
                 </>
               )
             ) : run.phase === "starting" ? (
               "Launching browser agents…"
+            ) : run.overdue ? (
+              "Still running: taking longer than usual. Results appear as each agent finishes."
             ) : (
               `Agents are browsing ${total || "your"} pincode × platform pair${total === 1 ? "" : "s"}…`
             )}
@@ -299,7 +301,7 @@ function JobCard({ job, name }: { job: AgentJobState; name: string | null }) {
 
       <div className="flex flex-wrap items-center gap-2">
         <ResultChip job={job} />
-        {!running && !failed && r?.eta_minutes != null && <span className="chip bg-linen">{Math.round(r.eta_minutes)} min</span>}
+        {!running && !failed && r?.eta_minutes != null && <span className="chip bg-linen">Delivery {etaLabel(Math.round(r.eta_minutes))}</span>}
         {!running && !failed && r?.mrp != null && r.price != null && r.mrp > r.price && (
           <span className="text-[12px] text-ink/70">
             MRP <s>{rupees(r.mrp)}</s>

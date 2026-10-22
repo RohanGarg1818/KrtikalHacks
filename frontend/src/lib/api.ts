@@ -1,9 +1,26 @@
 import { useEffect, useState } from "react";
 import useSWR, { type SWRConfiguration } from "swr";
-import { AUTH_ENABLED, getAccessToken, redirectToLogin } from "./auth";
+import { AUTH_ENABLED, getAccessToken, redirectToLogin, rejectSession } from "./auth";
 import type { ApiErrorBody, ApiErrorField } from "./types";
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+/**
+ * Backend base URL. NEXT_PUBLIC_API_URL wins; otherwise the backend is assumed on port 8000 of
+ * whatever host served this page, so a demo opened from another device on the LAN
+ * (http://192.168.1.20:3000) talks to http://192.168.1.20:8000 instead of its own localhost.
+ */
+function defaultApiUrl(): string {
+  if (typeof window === "undefined") return "http://localhost:8000";
+  const { protocol, hostname } = window.location;
+  return `${protocol}//${hostname}:8000`;
+}
+
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || defaultApiUrl()).replace(/\/$/, "");
+
+export type RequestOptions = RequestInit & {
+  json?: unknown;
+  /** Don't sign out / redirect on 401 — the caller handles it (login page session check). */
+  noAuthRedirect?: boolean;
+};
 
 /**
  * Any failed API call. `status` is the HTTP status (0 for network failures — see `isNetworkError`),
@@ -53,40 +70,42 @@ function composeMessage(status: number, body: Partial<ApiErrorBody> | null): Api
   return new ApiError(status, message, code, fields);
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
+async function request(path: string, init?: RequestOptions): Promise<Response> {
+  const { json, noAuthRedirect, ...rest } = init ?? {};
   const token = await getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function request(path: string, init?: RequestInit & { json?: unknown }): Promise<Response> {
-  const { json, ...rest } = init ?? {};
   let res: Response;
   try {
     res = await fetch(`${API_URL}/api${path}`, {
       ...rest,
       headers: {
         ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
-        ...(await authHeaders()),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...rest.headers,
       },
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
-    throw new ApiError(0, "Can't reach the ShelfSense server. Check your connection and try again.", "network_error");
+    throw new ApiError(0, `Can't reach the ShelfSense server at ${API_URL}. Check that the backend is running and try again.`, "network_error");
   }
   if (!res.ok) {
     let body: Partial<ApiErrorBody> | null = null;
     try {
       body = await res.json();
     } catch {}
-    if (res.status === 401 && AUTH_ENABLED) redirectToLogin();
-    throw composeMessage(res.status, body);
+    const error = composeMessage(res.status, body);
+    if (res.status === 401 && AUTH_ENABLED && !noAuthRedirect) {
+      // No token: send them to sign in. A token the backend rejects would bounce
+      // /login <-> /dashboard forever, so drop the session and explain on /login instead.
+      if (token) void rejectSession(error.message);
+      else redirectToLogin();
+    }
+    throw error;
   }
   return res;
 }
 
-export async function api<T = unknown>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+export async function api<T = unknown>(path: string, init?: RequestOptions): Promise<T> {
   const res = await request(path, init);
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -149,7 +168,11 @@ export function useMediaSrc(url: string | null | undefined): string | null {
         objectUrl = URL.createObjectURL(blob);
         setBlobUrl(objectUrl);
       })
-      .catch(() => {});
+      // Hand back the bare URL: its unauthenticated load fails, so the <img> reports "unavailable"
+      // instead of spinning forever.
+      .catch(() => {
+        if (!revoked) setBlobUrl(direct);
+      });
     return () => {
       revoked = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
 from ..models.checks import CheckResult
-from ..models.product import Product, ProductPincode
+from ..models.product import Competitor, Product, ProductPincode
 from ..models.user import Subscription, User
 from ..schemas.me import MeResponse, ProfileResponse, ProfileUpdate, UsageResponse
 
@@ -32,6 +32,25 @@ async def get_me(
         .join(Product, Product.id == ProductPincode.product_id)
         .where(Product.user_id == user.id)
     )
+    # Plan pincode/competitor limits are per product: report the busiest product.
+    per_product_pincodes = (
+        select(func.count(func.distinct(ProductPincode.pincode)).label("n"))
+        .join(Product, Product.id == ProductPincode.product_id)
+        .where(Product.user_id == user.id)
+        .group_by(ProductPincode.product_id)
+        .subquery()
+    )
+    max_pincodes = await session.scalar(select(func.max(per_product_pincodes.c.n)))
+    per_product_competitors = (
+        select(func.count(Competitor.id).label("n"))
+        .join(Product, Product.id == Competitor.product_id)
+        .where(Product.user_id == user.id)
+        .group_by(Competitor.product_id)
+        .subquery()
+    )
+    max_competitors = await session.scalar(
+        select(func.max(per_product_competitors.c.n))
+    )
     since = datetime.now(UTC) - timedelta(days=7)
     checks = await session.scalar(
         select(func.count())
@@ -43,7 +62,11 @@ async def get_me(
         profile=ProfileResponse.model_validate(user),
         plan=plan or "free",
         usage=UsageResponse(
-            products=products or 0, pincodes=pincodes or 0, checks_this_week=checks or 0
+            products=products or 0,
+            pincodes=pincodes or 0,
+            max_pincodes_per_product=max_pincodes or 0,
+            max_competitors_per_product=max_competitors or 0,
+            checks_this_week=checks or 0,
         ),
     )
 

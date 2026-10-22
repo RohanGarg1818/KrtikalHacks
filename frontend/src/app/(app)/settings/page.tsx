@@ -4,9 +4,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, downloadFile, errorMessage, useApi } from "@/lib/api";
+import { AUTH_ENABLED, getSupabase, signOut } from "@/lib/auth";
 import { setDisplayTimeZone } from "@/lib/format";
 import { toast } from "@/lib/toast";
-import type { Health, Me, Pincode, PlanLimits, Plans, ProductCard, UserSettings } from "@/lib/types";
+import type { Health, Me, Pincode, PlanChange, PlanLimits, Plans, ProductCard, UserSettings } from "@/lib/types";
 import { CardSkeleton, ErrorCard, Modal, useConfirm } from "@/components/ui";
 
 const ASSET = "/figma/settings";
@@ -17,7 +18,7 @@ const SECTIONS = [
   { id: "plan", label: "Plan & billing", icon: "imgNavPlan", w: 16.3388, h: 12.3388 },
   { id: "notifications", label: "Notifications", icon: "imgNavNotifications", w: 12.3388, h: 16.3936 },
   { id: "telegram", label: "Telegram", icon: "imgNavTelegram", w: 15.3537, h: 12.3188 },
-  { id: "region", label: "Language & region", icon: "imgNavRegion", w: 16.3388, h: 16.3388 },
+  { id: "region", label: "Region", icon: "imgNavRegion", w: 16.3388, h: 16.3388 },
   { id: "security", label: "Security", icon: "imgNavSecurity", w: 12.3388, h: 17.284 },
   { id: "data", label: "Data & privacy", icon: "imgNavData", w: 13.3388, h: 16.3487 },
 ] as const;
@@ -28,15 +29,11 @@ const PLAN_COPY: Record<string, { price: string; blurb: string }> = {
   brand: { price: "Custom", blurb: "City-wide coverage, distributor reports, priority refresh" },
 };
 
+/** Must match `BusinessType` in backend/app/schemas/me.py (anything else is a 422). */
 const BUSINESS_TYPES = [
   ["marketplace_seller", "Marketplace seller"],
   ["d2c_brand", "D2C brand on quick commerce"],
   ["brand_team", "Brand / sales team"],
-] as const;
-
-const LANGUAGES = [
-  ["en", "English"],
-  ["hi", "हिन्दी (Hindi)"],
 ] as const;
 
 /** Common zones first; the full IANA list follows when the browser exposes it. */
@@ -92,17 +89,15 @@ type Draft = {
   name: string;
   business_name: string;
   business_type: string;
-  language: string;
   timezone: string;
   default_city: string;
   briefing_time: string;
   quiet_hours_start: string;
   quiet_hours_end: string;
   telegram: boolean;
-  email: boolean;
 };
-const PROFILE_KEYS = ["name", "business_name", "business_type", "language", "timezone", "default_city"] as const;
-const SETTINGS_KEYS = ["briefing_time", "quiet_hours_start", "quiet_hours_end", "telegram", "email"] as const;
+const PROFILE_KEYS = ["name", "business_name", "business_type", "timezone", "default_city"] as const;
+const SETTINGS_KEYS = ["briefing_time", "quiet_hours_start", "quiet_hours_end", "telegram"] as const;
 
 function toDraft(me: Me, s: UserSettings): Draft {
   const ch = (s.channels ?? {}) as Record<string, unknown>;
@@ -110,14 +105,13 @@ function toDraft(me: Me, s: UserSettings): Draft {
     name: me.profile.name ?? "",
     business_name: me.profile.business_name ?? "",
     business_type: me.profile.business_type ?? "marketplace_seller",
-    language: me.profile.language ?? "en",
     timezone: me.profile.timezone ?? "Asia/Kolkata",
     default_city: me.profile.default_city ?? "",
     briefing_time: s.briefing_time ?? "09:00",
     quiet_hours_start: s.quiet_hours_start ?? "",
     quiet_hours_end: s.quiet_hours_end ?? "",
-    telegram: !!ch.telegram,
-    email: !!ch.email,
+    // Alert delivery treats a missing flag as on (services/alerts.py), so the switch does too.
+    telegram: ch.telegram !== false,
   };
 }
 
@@ -135,7 +129,7 @@ function MaskIcon({ name, w, h }: { name: string; w: number; h: number }) {
   );
 }
 
-/** Hover/focus tooltip for actions that have no backend yet. */
+/** Hover/focus tooltip explaining a fixed or unavailable control. */
 function Tip({ tip, children, className = "" }: { tip: string; children: ReactNode; className?: string }) {
   return (
     <span className={`relative inline-flex group ${className}`} title={tip} tabIndex={0} aria-label={tip}>
@@ -224,10 +218,10 @@ function Switch({ checked, onChange, label, disabled }: { checked: boolean; onCh
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange?.(!checked)}
-      className={`relative h-[28px] w-[52px] shrink-0 rounded-full border-2 border-ink transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${checked ? "bg-slate" : "bg-linen"}`}
+      className={`relative h-[28px] w-[52px] shrink-0 rounded-full border-2 border-ink transition-colors before:absolute before:-inset-[7px] before:content-[''] disabled:cursor-not-allowed disabled:opacity-60 ${checked ? "bg-slate" : "bg-linen"}`}
     >
       <span
-        className={`absolute top-[2px] size-[20px] rounded-full transition-all ${checked ? "left-[24px] bg-linen border border-ink" : "left-[2px] bg-ink"}`}
+        className={`absolute left-[3px] top-1/2 -translate-y-1/2 size-[20px] rounded-full transition-[translate,background-color] duration-200 ease-out ${checked ? "translate-x-[24px] bg-linen border border-ink" : "bg-ink"}`}
       />
     </button>
   );
@@ -272,7 +266,8 @@ function StatusPill({ connected }: { connected: boolean }) {
 
 /* ---------- Telegram: derive personal / group chats from per-product status ---------- */
 
-type TgLink = { chat_id: string; chat_title: string | null };
+/** One chat linked to one product (`TelegramChatLink` in GET /products/{id}/telegram/status). */
+type TgLink = { id: string; chat_id: string; chat_title: string | null };
 type TgStatus = { links: TgLink[] };
 const isGroupChat = (chatId: string) => chatId.startsWith("-") || chatId.includes("group");
 
@@ -317,6 +312,8 @@ export default function SettingsPage() {
   const [planOpen, setPlanOpen] = useState(false);
   const [planBusy, setPlanBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [planResult, setPlanResult] = useState<PlanChange | null>(null);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [confirmUi, confirm] = useConfirm();
   const [active, setActive] = useState<string>("profile");
   const spyLock = useRef(0); // ignore scroll-spy briefly after a nav click
@@ -343,6 +340,27 @@ export default function SettingsPage() {
 
   // Scroll-spy: the last section whose top has passed below the sticky header.
   const ready = !!draft;
+
+  // Deep links (/settings#plan, #telegram) arrive while the skeleton is showing, so the browser
+  // can't scroll to them. Once the sections exist, scroll to the hash ourselves.
+  useEffect(() => {
+    if (!ready) return;
+    const scrollToHash = () => {
+      const id = decodeURIComponent(window.location.hash.slice(1));
+      if (!id) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      spyLock.current = Date.now() + 1000;
+      setActive(id);
+      el.scrollIntoView({ block: "start" });
+    };
+    const frame = requestAnimationFrame(scrollToHash);
+    window.addEventListener("hashchange", scrollToHash);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("hashchange", scrollToHash);
+    };
+  }, [ready]);
   useEffect(() => {
     if (!ready) return;
     const onScroll = () => {
@@ -390,7 +408,8 @@ export default function SettingsPage() {
               briefing_time: draft.briefing_time,
               quiet_hours_start: draft.quiet_hours_start || null,
               quiet_hours_end: draft.quiet_hours_end || null,
-              channels: { ...((settings.data?.channels ?? {}) as Record<string, unknown>), telegram: draft.telegram, email: draft.email },
+              // Other channel flags (e.g. a legacy `email`) are kept as they are.
+              channels: { ...((settings.data?.channels ?? {}) as Record<string, unknown>), telegram: draft.telegram },
             },
           }),
         );
@@ -412,12 +431,14 @@ export default function SettingsPage() {
     if (planBusy) return;
     setPlanBusy(plan);
     try {
-      const r = await api<{ plan: string; adjusted_products?: number; paused_products?: number }>("/me/plan", { method: "POST", json: { plan } });
+      const r = await api<PlanChange>("/me/plan", { method: "POST", json: { plan } });
       await Promise.all([me.mutate(), plans.mutate(), products.mutate()]);
       setPlanOpen(false);
+      setPlanResult(r);
       const notes: string[] = [];
       if (r.adjusted_products) notes.push(`${r.adjusted_products} product${r.adjusted_products === 1 ? "" : "s"} moved to a slower check schedule`);
       if (r.paused_products) notes.push(`${r.paused_products} product${r.paused_products === 1 ? "" : "s"} paused to fit the plan`);
+      if (r.over_limit?.length) notes.push(`${r.over_limit.length} product${r.over_limit.length === 1 ? "" : "s"} over the new limits`);
       toast(`Switched to ${plan} (test mode)${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
     } catch (e) {
       toast.error(
@@ -433,6 +454,8 @@ export default function SettingsPage() {
   const plan = me.data.plan;
   const limits: PlanLimits | undefined = plans.data?.plans.find((p) => p.plan === plan);
   const usage = me.data.usage;
+  // Production refuses POST /me/plan: plans change through billing there.
+  const liveBilling = health.data?.billing_mode === "live";
 
   // Option lists that always include the saved value.
   const briefingOpts = Array.from(new Set([...BRIEFING_TIMES, draft.briefing_time])).sort().map((t) => [t, briefingLabel(t)] as const);
@@ -464,18 +487,16 @@ export default function SettingsPage() {
   async function disconnectChat(chatId: string) {
     const chat = chats.get(chatId);
     if (!chat || !tg.byProduct) return;
-    // The API disconnects per product and unlinks that product's chats everywhere.
-    // Prefer a product that is linked only to this chat so nothing else is touched.
-    const clean = chat.productIds.find((pid) => (tg.byProduct![pid] ?? []).every((l) => l.chat_id === chatId));
-    const pid = clean ?? chat.productIds[0];
-    const p = productList.find((x) => x.id === pid);
+    // Every product this chat is linked to, with that product's link id for this chat.
+    const targets = chat.productIds.flatMap((pid) =>
+      (tg.byProduct![pid] ?? []).filter((l) => l.chat_id === chatId).map((l) => ({ pid, linkId: l.id })),
+    );
+    const names = chat.productIds.map((pid) => productList.find((x) => x.id === pid)?.name).filter(Boolean) as string[];
     const ok = await confirm({
       title: `Disconnect "${chat.title ?? "this chat"}"?`,
       body: (
         <>
-          It stops getting alerts for {p?.name ?? "this product"}.
-          {clean ? "" : ` This also disconnects any other chat linked to "${p?.name ?? "that product"}".`}
-          {chat.productIds.length > 1 ? ` It stays linked to ${chat.productIds.length - 1} other product${chat.productIds.length === 2 ? "" : "s"} — manage them per product.` : ""}
+          It stops getting alerts for {names.length === 1 ? names[0] : `all ${targets.length} products it's linked to`}. Other chats stay connected.
         </>
       ),
       confirmLabel: "Disconnect",
@@ -484,10 +505,19 @@ export default function SettingsPage() {
     if (!ok) return;
     setBusy(`tg-${chatId}`);
     try {
-      await api(`/products/${pid}/telegram`, { method: "DELETE" });
+      const results = await Promise.allSettled(
+        targets.map((t) => api(`/products/${encodeURIComponent(t.pid)}/telegram/links/${encodeURIComponent(t.linkId)}`, { method: "DELETE" })),
+      );
+      // A link that's already gone (404) counts as disconnected.
+      const failed = results.filter((r) => r.status === "rejected" && !(r.reason instanceof ApiError && r.reason.status === 404));
       await products.mutate();
       await tg.reload();
-      toast("Chat disconnected");
+      if (failed.length) {
+        const reason = (failed[0] as PromiseRejectedResult).reason;
+        toast.error(`Disconnected from ${targets.length - failed.length} of ${targets.length} products · ${errorMessage(reason, "try again")}`);
+      } else {
+        toast("Chat disconnected");
+      }
     } catch (e) {
       toast.error(errorMessage(e, "Couldn't disconnect"));
     } finally {
@@ -519,6 +549,7 @@ export default function SettingsPage() {
   }
 
   async function deleteAccount() {
+    if (devAuth) return;
     const ok = await confirm({
       title: "Delete your account?",
       body: "Every product, check, alert and Telegram link is removed. This cannot be undone.",
@@ -529,21 +560,26 @@ export default function SettingsPage() {
     setBusy("delete");
     try {
       await api("/me", { method: "DELETE" });
-      window.location.href = "/";
     } catch (e) {
       toast.error(errorMessage(e, "Couldn't delete account"));
       setBusy(null);
+      return;
+    }
+    toast("Account deleted");
+    // The ShelfSense data is gone; end the sign-in session too, or the next request would
+    // silently provision a fresh, empty account for the same login.
+    if (AUTH_ENABLED) {
+      await signOut().catch(() => window.location.assign("/login"));
+    } else {
+      window.location.href = "/";
     }
   }
-  const authTip = devAuth
-    ? "Not available in demo sign-in: every request uses the demo account."
-    : "Managed by your sign-in provider — not available here yet.";
 
   return (
-    <div className="mx-auto w-full max-w-[940px] min-w-0">
+    <div className="w-full max-w-[940px] min-w-0">
       {/* Page header */}
       <header className="flex flex-col gap-2 pb-8 lg:pb-10">
-        <h1 className="text-[40px] leading-[46px] sm:text-[56px] sm:leading-[61.6px] text-ink">Settings</h1>
+        <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] text-ink">Settings</h1>
         <p className="text-[16px] leading-6 text-ink">Manage your profile, plan and alerts.</p>
       </header>
 
@@ -584,32 +620,39 @@ export default function SettingsPage() {
           {/* 1. Profile */}
           <Card id="profile" title="Profile">
             <div className="flex flex-wrap items-center gap-6 pb-6">
-              <div className="flex size-[72px] items-center justify-center rounded-full border-2 border-ink bg-sand shadow-[2px_2px_0_var(--ink)]">
+              <div className="flex size-[72px] items-center justify-center rounded-full border-2 border-ink bg-sand shadow-[2px_2px_0_var(--ink)]" aria-hidden>
                 <span className="font-display text-[24px] leading-8 text-ink">{initials(draft.name)}</span>
               </div>
-              <Tip tip="Photo upload is coming soon — your initials are shown for now.">
-                <button type="button" className="btn btn-ghost h-12 py-0" disabled>
-                  Change photo
-                </button>
-              </Tip>
+              <p className="text-[14px] leading-5 text-ink/80">Your initials appear on the sidebar and top bar.</p>
             </div>
             <div className="grid grid-cols-1 gap-6 pb-6 sm:grid-cols-2">
               <Field label="Name">
-                <input className={INPUT} value={draft.name} onChange={(e) => set("name", e.target.value)} autoComplete="name" />
+                <input className={INPUT} value={draft.name} onChange={(e) => set("name", e.target.value)} autoComplete="name" maxLength={200} />
               </Field>
               <Field label="Business name">
-                <input className={INPUT} value={draft.business_name} onChange={(e) => set("business_name", e.target.value)} autoComplete="organization" />
+                <input
+                  className={INPUT}
+                  value={draft.business_name}
+                  onChange={(e) => set("business_name", e.target.value)}
+                  autoComplete="organization"
+                  maxLength={200}
+                />
               </Field>
-              <Field label="Email">
+              <Field label="Email" hint={devAuth ? "Demo account" : "Your sign-in email"}>
                 <input className={`${INPUT} cursor-not-allowed text-ink/70`} value={me.data.profile.email} readOnly title="Your sign-in email can't be changed here" />
               </Field>
-              <Field label="Phone" hint="Coming soon">
-                <input className={`${INPUT} cursor-not-allowed opacity-60`} placeholder="+91 · not saved yet" disabled title="Phone numbers aren't stored yet — coming soon" />
+              <Field label="Business type">
+                <Select
+                  value={draft.business_type}
+                  onChange={(v) => set("business_type", v)}
+                  options={
+                    BUSINESS_TYPES.some(([v]) => v === draft.business_type)
+                      ? BUSINESS_TYPES
+                      : [...BUSINESS_TYPES, [draft.business_type, draft.business_type.replace(/_/g, " ")] as const]
+                  }
+                />
               </Field>
             </div>
-            <Field label="Business type">
-              <Select value={draft.business_type} onChange={(v) => set("business_type", v)} options={BUSINESS_TYPES} />
-            </Field>
           </Card>
 
           {/* 2. Plan & billing */}
@@ -620,25 +663,62 @@ export default function SettingsPage() {
                   <span className="rounded-full border border-ink bg-sand px-[13px] py-[5px] text-[14px] leading-5 font-bold tracking-[0.35px] text-ink uppercase">{plan}</span>
                   <span className="font-display text-[22px] sm:text-[24px] leading-8 text-linen capitalize">ShelfSense {plan} Plan</span>
                 </div>
-                <span className="text-[16px] leading-6 font-semibold text-sand">Test mode</span>
+                {!liveBilling && <span className="text-[16px] leading-6 font-semibold text-sand">Test mode</span>}
               </div>
               <div className="flex flex-col gap-4">
                 <UsageBar label="Products" value={usage.products} max={limits?.products} />
-                <UsageBar label="Pincodes" value={usage.pincodes} max={limits?.pincodes} />
+                {/* Pincode and competitor limits are per product: show the busiest product. */}
+                <UsageBar label="Pincodes (busiest product)" value={usage.max_pincodes_per_product ?? usage.pincodes} max={limits?.pincodes} />
+                {limits?.competitors != null && (
+                  <UsageBar label="Competitors (busiest product)" value={usage.max_competitors_per_product ?? 0} max={limits.competitors} />
+                )}
                 <UsageBar label="Checks this week" value={usage.checks_this_week} max={undefined} />
               </div>
+              <p className="pt-4 text-[13px] leading-5 text-linen/80">
+                {usage.pincodes} distinct pincode{usage.pincodes === 1 ? "" : "s"} tracked across all products.
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-4 pt-6 pb-4">
-              <button type="button" className="btn btn-primary h-12 py-0 px-[26px]" onClick={() => setPlanOpen(true)}>
-                Change plan
-              </button>
-              <Tip tip="Test mode: no payments are taken, so there are no invoices.">
-                <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled>
-                  View invoices
-                </button>
-              </Tip>
-            </div>
-            <p className="text-[14px] leading-5 text-ink">Payments are in test mode for the demo.</p>
+            {planResult?.over_limit?.length ? (
+              <div role="status" className="mt-6 rounded-[16px] border-2 border-ink bg-sand p-4 text-[14px] leading-5">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="font-semibold">
+                    {planResult.over_limit.length} product{planResult.over_limit.length === 1 ? " tracks" : "s track"} more than the {planResult.plan} plan
+                    allows. Nothing was deleted — trim them to keep checks within your plan.
+                  </p>
+                  <button type="button" className="text-[13px] font-semibold underline shrink-0" onClick={() => setPlanResult(null)}>
+                    Dismiss
+                  </button>
+                </div>
+                <ul className="mt-3 flex flex-col gap-2">
+                  {planResult.over_limit.map((p) => (
+                    <li key={p.product_id} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        <span className="font-semibold">{p.name}</span>
+                        {p.pincode_limit != null && p.pincodes > p.pincode_limit ? ` · ${p.pincodes}/${p.pincode_limit} pincodes` : ""}
+                        {p.competitors > p.competitor_limit ? ` · ${p.competitors}/${p.competitor_limit} competitors` : ""}
+                      </span>
+                      <Link href={`/products/${p.product_id}/settings`} className="font-semibold text-slate underline underline-offset-2">
+                        Edit product
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {liveBilling ? (
+              <p className="pt-6 text-[14px] leading-5 text-ink">
+                Plan changes go through billing on this server. Contact your ShelfSense account manager to upgrade or downgrade.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-4 pt-6 pb-4">
+                  <button type="button" className="btn btn-primary h-12 py-0 px-[26px]" onClick={() => setPlanOpen(true)}>
+                    Change plan
+                  </button>
+                </div>
+                <p className="text-[14px] leading-5 text-ink">Payments are in test mode for the demo: plan changes apply instantly and nothing is charged.</p>
+              </>
+            )}
           </Card>
 
           {/* 3. Notifications */}
@@ -659,12 +739,16 @@ export default function SettingsPage() {
                 options={quietOpts.map(([s, e]) => [`${s}|${e}`, quietLabel(s, e)] as const)}
               />
             </Row>
-            <Row label="Telegram alerts">
+            <Row label="Telegram alerts" last>
               <Switch label="Telegram alerts" checked={draft.telegram} onChange={(v) => set("telegram", v)} />
             </Row>
-            <Row label="Email alerts" last>
-              <Switch label="Email alerts" checked={draft.email} onChange={(v) => set("email", v)} />
-            </Row>
+            <p className="pt-2 text-[14px] leading-5 text-ink/80">
+              Turning Telegram alerts off pauses alert messages to every linked chat. Alerts still appear in the bell and on the{" "}
+              <Link href="/alerts" className="font-semibold underline underline-offset-2">
+                Alerts page
+              </Link>
+              .
+            </p>
           </Card>
 
           {/* 4. Telegram */}
@@ -713,12 +797,9 @@ export default function SettingsPage() {
             ) : null}
           </Card>
 
-          {/* 5. Language & region */}
-          <Card id="region" title="Language & region">
+          {/* 5. Region */}
+          <Card id="region" title="Region">
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-              <Field label="Language">
-                <Select value={draft.language} onChange={(v) => set("language", v)} options={LANGUAGES} />
-              </Field>
               <Field label="Currency">
                 <Tip tip="ShelfSense tracks Indian quick-commerce prices in rupees only." className="w-full">
                   <Select className="w-full" value="INR" options={[["INR", "₹ INR"]]} disabled ariaLabel="Currency" />
@@ -735,18 +816,13 @@ export default function SettingsPage() {
 
           {/* 6. Security */}
           <Card id="security" title="Security" tight>
-            <Row label="Password">
-              <Tip tip={authTip}>
-                <button type="button" className="btn btn-ghost h-12 py-0" disabled>
+            {AUTH_ENABLED ? (
+              <Row label="Password" last>
+                <button type="button" className="btn btn-ghost h-12 py-0" onClick={() => setPasswordOpen(true)}>
                   Change password
                 </button>
-              </Tip>
-            </Row>
-            <Row label="Two-step login" last>
-              <Tip tip={authTip}>
-                <Switch label="Two-step login" checked={false} disabled />
-              </Tip>
-            </Row>
+              </Row>
+            ) : null}
             <p className="pt-2 text-[14px] leading-5 text-ink/80">
               {devAuth
                 ? "Demo sign-in: every request uses the demo account."
@@ -764,21 +840,25 @@ export default function SettingsPage() {
               <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled={!!busy} onClick={() => exportData("json")} title="Your whole account: profile, products, rules, results, alerts and chats">
                 {busy === "export-json" ? "Exporting…" : "Export account (JSON)"}
               </button>
-              <Tip tip="Bulk screenshot download is coming soon — open a check to view its screenshots.">
-                <button type="button" className="btn btn-ghost h-12 py-0 px-[26px]" disabled>
-                  Download screenshots
-                </button>
-              </Tip>
             </div>
+            <p className="pb-4 text-[14px] leading-5 text-ink/80">
+              Each check&apos;s screenshot link is included in the JSON export; open a product&apos;s check results to view them.
+            </p>
             <div className="h-px w-full bg-ink/20 my-2" />
             <div className="flex flex-wrap items-center justify-between gap-4 pt-4">
               <div>
                 <p className="text-[16px] leading-6 font-semibold text-ink">Delete account</p>
-                <p className="text-[14px] leading-5 text-ink/80">This cannot be undone.</p>
+                <p className="text-[14px] leading-5 text-ink/80">
+                  {devAuth
+                    ? "Not available in demo mode: everyone shares the demo account. Re-run the seed script to reset it."
+                    : "Removes every product, check, alert and Telegram link, then signs you out. This cannot be undone."}
+                </p>
               </div>
-              <button type="button" className="btn btn-ink h-12 py-0 px-[26px]" disabled={busy === "delete"} onClick={deleteAccount}>
-                {busy === "delete" ? "Deleting…" : "Delete account"}
-              </button>
+              {!devAuth && (
+                <button type="button" className="btn btn-ink h-12 py-0 px-[26px]" disabled={busy === "delete" || !health.data} onClick={deleteAccount}>
+                  {busy === "delete" ? "Deleting…" : "Delete account"}
+                </button>
+              )}
             </div>
           </Card>
 
@@ -821,15 +901,21 @@ export default function SettingsPage() {
               </button>
             </div>
             <p className="pb-5 text-[14px] leading-5 text-ink">Test mode: plan changes apply instantly and no payment is taken.</p>
+            {plans.error && !plans.data ? (
+              <ErrorCard error={plans.error} onRetry={() => plans.mutate()} />
+            ) : !plans.data ? (
+              <CardSkeleton rows={4} />
+            ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              {(plans.data?.plans ?? []).map((p) => {
+              {plans.data.plans.map((p) => {
                 const current = p.plan === plan;
                 return (
                   <div key={p.plan} className={`flex flex-col rounded-[16px] border-2 border-ink p-4 ${current ? "bg-sand shadow-[4px_4px_0_var(--ink)]" : "bg-linen"}`}>
                     <p className="eyebrow">{p.plan}</p>
                     <p className="font-display mt-1 text-[24px] leading-8">{PLAN_COPY[p.plan]?.price ?? "—"}</p>
                     <p className="mt-2 flex-1 text-[13px] leading-5 text-deep">
-                      {p.products ?? "Unlimited"} products · {p.pincodes ?? "Unlimited"} pincodes
+                      {p.products ?? "Unlimited"} products · {p.pincodes ?? "Unlimited"} pincodes per product
+                      {p.competitors != null ? ` · ${p.competitors} competitors per product` : ""}
                       {PLAN_COPY[p.plan] ? <><br />{PLAN_COPY[p.plan].blurb}</> : null}
                     </p>
                     <button
@@ -844,8 +930,78 @@ export default function SettingsPage() {
                 );
               })}
             </div>
+            )}
       </Modal>
+      <PasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
       {confirmUi}
     </div>
+  );
+}
+
+/* ---------- Change password (Supabase sign-in only) ---------- */
+
+function PasswordDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const close = () => {
+    if (busy) return;
+    setPassword("");
+    setAgain("");
+    setError(null);
+    onClose();
+  };
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (password.length < 8) return setError("Use at least 8 characters.");
+    if (password !== again) return setError("The two passwords don't match.");
+    const client = getSupabase();
+    if (!client) return setError("Sign-in isn't configured in this frontend.");
+    setBusy(true);
+    setError(null);
+    try {
+      const { error: err } = await (await client).auth.updateUser({ password });
+      if (err) throw err;
+      toast("Password changed");
+      setBusy(false);
+      setPassword("");
+      setAgain("");
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err, "Couldn't change your password"));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={close} labelledBy="password-title" className="max-w-[460px]">
+      <h2 id="password-title" className="text-[26px] leading-8 tracking-[-0.5px]">
+        Change password
+      </h2>
+      <form className="mt-4 flex flex-col gap-4" onSubmit={submit}>
+        <Field label="New password">
+          <input className={INPUT} type="password" autoComplete="new-password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+        <Field label="Repeat new password">
+          <input className={INPUT} type="password" autoComplete="new-password" minLength={8} required value={again} onChange={(e) => setAgain(e.target.value)} />
+        </Field>
+        {error && (
+          <p role="alert" className="rounded-[12px] border-2 border-ink bg-sand px-4 py-3 text-[14px] font-semibold">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-wrap justify-end gap-3 pt-2">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={close}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={busy || !password || !again}>
+            {busy ? "Saving…" : "Change password"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

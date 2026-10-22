@@ -1,5 +1,6 @@
 """Read-only catalog endpoints plus per-product selection and listing links."""
 
+import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +17,8 @@ from ..models.user import User
 from ..schemas.common import PLATFORMS, Platform, WebUrl, required_text
 from ..schemas.products import AlertRuleOut, PincodeSelection
 from ..services.ai import get_ai_provider, with_fallback
-from ..services.alerts import resolve_rule_pincodes
+from ..services.ai.fallback import FallbackAIProvider
+from ..services.alerts import ALERT_KINDS, resolve_rule_pincodes
 from ..services.plans import PLAN_LIMITS
 from ..services.telegram import redeem_link_code
 from .products import get_owned_product, get_user_plan
@@ -71,6 +73,44 @@ class SimulateLinkRequest(BaseModel):
 
 class AlertRuleParseRequest(BaseModel):
     text: RuleSentence
+
+
+# What the rule engine can evaluate; anything else is rejected at parse time
+# instead of being saved as a rule that never fires.
+SUPPORTED_RULES_HINT = (
+    "Try one of: “Alert me if we go out of stock”, “…out of stock in South Delhi” "
+    "(or a pincode like 110017), “price changes by more than 5%”, “my price is "
+    "more than 5% above the rival”, “rating drops below 4”, or “a competitor "
+    "goes out of stock”."
+)
+_RIVAL_RE = re.compile(r"\b(rival|rivals|competitor|competitors|cheapest)\b")
+_GAP_RE = re.compile(
+    r"\b(above|higher than|more expensive|costlier|undercut|cheaper than|gap)\b"
+)
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|percent|per cent)")
+
+
+def _price_gap_rule(text: str) -> AlertRuleOut | None:
+    """“Price more than 5% above the rival” — the parsers read it as a price change."""
+    lowered = text.lower()
+    if "stock" in lowered or not _RIVAL_RE.search(lowered):
+        return None
+    if not _GAP_RE.search(lowered) or not re.search(r"\bpric", lowered):
+        return None
+    match = _PCT_RE.search(lowered)
+    return AlertRuleOut(
+        kind="price_gap_pct",
+        threshold=float(match.group(1)) if match else None,
+        rule_text=text,
+        rule_json={"trigger": "price above rival"},
+    )
+
+
+def _unsupported(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": "unsupported_rule", "message": f"{message} {SUPPORTED_RULES_HINT}"},
+    )
 
 
 @router.get("/pincodes", response_model=list[PincodeOut])
@@ -174,15 +214,27 @@ async def parse_alert_rule(
 ) -> AlertRuleOut:
     """Turn a plain-English rule into a structured one; the client saves it via PUT."""
     await get_owned_product(session, user.id, product_id)
-    rule, _source = await with_fallback(get_ai_provider(), "parse_alert_rule", payload.text)
+    rule = _price_gap_rule(payload.text)
+    if rule is None:
+        rule, _source = await with_fallback(
+            get_ai_provider(), "parse_alert_rule", payload.text
+        )
+    if rule.kind == "custom" or rule.kind not in ALERT_KINDS:
+        # The model may punt on text the keyword parser still understands.
+        rule = await FallbackAIProvider().parse_alert_rule(payload.text)
+    if rule.kind == "custom" or rule.kind not in ALERT_KINDS:
+        raise _unsupported("ShelfSense can't watch for that yet.")
     rule_json = dict(rule.rule_json or {})
     if rule.kind == "oos_area":
         # Show the seller exactly which pincodes "South Delhi" etc. cover.
         named = [str(code) for code in rule_json.get("pincodes") or []]
-        resolved = await resolve_rule_pincodes(
-            session, [str(area) for area in rule_json.get("areas") or []]
-        )
+        areas = [str(area) for area in rule_json.get("areas") or []]
+        resolved = await resolve_rule_pincodes(session, areas)
         rule_json["pincodes"] = sorted(set(named) | set(resolved))
+        if not rule_json["pincodes"]:
+            raise _unsupported(
+                f"No tracked pincodes match {', '.join(areas) or 'that area'}."
+            )
     return AlertRuleOut(
         kind=rule.kind,
         threshold=rule.threshold,
@@ -200,6 +252,8 @@ async def simulate_telegram_link(
     settings: Settings = Depends(get_settings),
 ) -> None:
     """Mock mode only: redeem a link code as if the bot had received `/start <code>`."""
+    if settings.is_production:
+        raise HTTPException(status_code=404, detail="Not found")
     if settings.telegram_enabled:
         raise HTTPException(status_code=409, detail="A real Telegram bot is configured")
     await get_owned_product(session, user.id, product_id)

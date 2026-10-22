@@ -35,7 +35,22 @@ class TelegramStatus(BaseModel):
     total: int
 
 
+class PlanMeters(BaseModel):
+    """Plan usage measured the same way the plan limits are enforced."""
+
+    plan: str
+    products: int
+    product_limit: int | None
+    # Pincode limits apply per product: the busiest product vs that limit.
+    max_pincodes_per_product: int
+    pincode_limit_per_product: int | None
+    # Credits spent today (UTC day) vs the daily credit budget.
+    credits_today: int
+    daily_credit_budget: int | None
+
+
 class DashboardResponse(BaseModel):
+    meters: PlanMeters | None = None
     tiles: list[StatTile]
     alerts: list[DashboardAlert]
     recommendations: list[DashboardRecommendation]

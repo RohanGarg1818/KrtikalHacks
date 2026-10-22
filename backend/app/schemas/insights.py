@@ -109,6 +109,10 @@ class ReviewItem(BaseModel):
 
 
 class ReviewsResponse(BaseModel):
+    # The seller's own strengths and weak spots.
     loves: list[str]
     complaints: list[str]
+    # Only from competitor review insights; empty when none were collected.
+    rival_loves: list[str] = []
+    rival_complaints: list[str] = []
     items: list[ReviewItem]

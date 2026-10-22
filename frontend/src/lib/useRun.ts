@@ -9,6 +9,7 @@ import type {
   RunEvent,
   RunEventResult,
   RunResultRef,
+  RunSummary,
   TinyFishMode,
   TruePrice,
 } from "./types";
@@ -59,6 +60,8 @@ export interface RunState {
   error: string | null;
   /** Highest SSE `id` applied — used for Last-Event-ID resume and dedupe. */
   lastSeq: number;
+  /** Still running on the server well past the expected time (never treated as failed). */
+  overdue: boolean;
 }
 
 /** Back-compat summary used by the product + heatmap pages. `done` = successful results. */
@@ -100,7 +103,25 @@ export function initialRunState(runId: string, total = 0, startedAt = Date.now()
     connection: "connecting",
     error: null,
     lastSeq: 0,
+    overdue: false,
   };
+}
+
+const parseTime = (iso: string | null | undefined) => {
+  const t = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(t) ? t : null;
+};
+
+/**
+ * How long a run should reasonably take, measured from the server's `started_at`: jobs run
+ * `concurrency` at a time, live agent sessions take up to ~10 min each (plus a retry), simulated
+ * ones seconds. Past this the run is shown as "still running", never as failed.
+ */
+export function expectedRunMs(run: Pick<RunState, "total" | "concurrency" | "mode">) {
+  const concurrency = Math.max(1, run.concurrency ?? 2);
+  const rounds = Math.ceil(Math.max(1, run.total) / concurrency);
+  const perRound = run.mode === "simulated" ? 60_000 : 12 * 60_000;
+  return Math.max(5 * 60_000, rounds * perRound);
 }
 
 function blankJob(key: string, job?: Partial<AgentJob> | null): AgentJobState {
@@ -260,6 +281,8 @@ export function applyRunSnapshot(state: RunState, run: RunDetail, now = Date.now
     ...state,
     total: run.total_jobs ?? state.total,
     mode: run.mode ?? state.mode,
+    // Elapsed time and the overdue check follow the server clock, not when this tab attached.
+    startedAt: parseTime(run.started_at) ?? state.startedAt,
   };
   for (const r of run.results ?? []) next = applyResultRef(next, r, now);
   next = recount(next);
@@ -305,6 +328,7 @@ type Action =
   | { kind: "event"; event: RunEvent; seq: number | null }
   | { kind: "snapshot"; run: RunDetail }
   | { kind: "connection"; connection: Connection }
+  | { kind: "overdue" }
   | { kind: "error"; message: string };
 
 function reducer(state: RunState | null, action: Action): RunState | null {
@@ -325,6 +349,8 @@ function reducer(state: RunState | null, action: Action): RunState | null {
       return state.connection === action.connection || state.connection === "closed"
         ? state
         : { ...state, connection: action.connection };
+    case "overdue":
+      return state.overdue ? state : { ...state, overdue: true };
     case "error":
       return { ...state, phase: "error", error: action.message, connection: "closed", finishedAt: state.finishedAt ?? Date.now() };
   }
@@ -334,15 +360,20 @@ function reducer(state: RunState | null, action: Action): RunState | null {
 
 const EVENT_TYPES = ["run_started", "job_started", "agent_step", "result", "job_failed", "run_done"] as const;
 const POLL_MS = 3000;
-/** No stream traffic for this long → check the run over REST. */
-const IDLE_MS = 20_000;
-/** Give up following a run that never finishes. */
-const HARD_TIMEOUT_MS = 15 * 60_000;
+/** Polling a run that is past its expected time (the server still says it is running). */
+const SLOW_POLL_MS = 15_000;
+/**
+ * No stream traffic (events or the server's named `ping` heartbeat, sent every 15 s) for this long
+ * → the stream is dead; check the run over REST.
+ */
+const IDLE_MS = 40_000;
 const MAX_POLL_FAILURES = 5;
 
 /**
  * Starts (or attaches to) a check run and follows it: SSE stream with Last-Event-ID resume, event
- * dedupe by seq + job_key, REST polling fallback every 3 s when the stream dies, and a hard timeout.
+ * dedupe by seq + job_key, REST polling fallback every 3 s when the stream dies. A run that is
+ * still going on the server is never marked failed by the client: past its expected duration
+ * (from the server's `started_at`) it is flagged `overdue` and keeps being followed.
  * Exposes the full per-job agent state for the Agent console.
  */
 export function useRun(productId: string | null, onUpdate?: () => void) {
@@ -451,7 +482,19 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
           }
         }
         if (!s.es || s.es.readyState !== EventSource.OPEN) dispatch({ kind: "connection", connection: "polling" });
-        s.pollTimer = setTimeout(poll, POLL_MS);
+        s.pollTimer = setTimeout(poll, runRef.current?.overdue ? SLOW_POLL_MS : POLL_MS);
+      };
+
+      // One REST read on attach: server `started_at` (for elapsed / overdue) and results so far.
+      const syncOnce = async () => {
+        try {
+          const detail = await api<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+          if (s.stopped) return;
+          dispatch({ kind: "snapshot", run: detail });
+          if (!isActiveRunStatus(detail.status)) finish();
+        } catch {
+          // The stream / polling fallback reports real problems.
+        }
       };
 
       const startPolling = () => {
@@ -491,6 +534,10 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
           if (data.type === "run_done") finish();
         };
         for (const type of EVENT_TYPES) es.addEventListener(type, handle(type));
+        // Server heartbeat while agents work: proves the stream is alive, carries no state.
+        es.addEventListener("ping", () => {
+          s.lastActivity = Date.now();
+        });
         es.onerror = () => {
           if (s.stopped || isFinished()) return;
           if (es.readyState === EventSource.CLOSED) {
@@ -510,19 +557,16 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
         };
       };
 
-      // Watchdog: silent stream → poll; never follow forever.
+      // Watchdog: silent stream → poll. A slow run is flagged, never failed: the server decides.
       const watchdog = () => {
         if (isFinished()) return;
         const r = runRef.current;
-        if (r && Date.now() - r.startedAt > HARD_TIMEOUT_MS) {
-          dispatch({ kind: "error", message: "This check is taking far longer than expected. Results will appear when it finishes." });
-          finish();
-          return;
-        }
+        if (r && !r.overdue && Date.now() - r.startedAt > expectedRunMs(r)) dispatch({ kind: "overdue" });
         if (Date.now() - s.lastActivity > IDLE_MS) startPolling();
         later(watchdog, 5000);
       };
 
+      void syncOnce();
       void open();
       later(watchdog, 5000);
     },
@@ -531,35 +575,60 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
 
   /** Follow an existing run (e.g. one already in progress when the page opened). */
   const attach = useCallback(
-    (runId: string, total = 0) => {
+    (runId: string, total = 0, startedAt?: string | null) => {
       setStartError(null);
-      dispatch({ kind: "reset", state: initialRunState(runId, total) });
+      dispatch({ kind: "reset", state: initialRunState(runId, total, parseTime(startedAt) ?? Date.now()) });
       follow(runId);
     },
     [follow],
   );
 
+  // One start request at a time: a double click must not send a second POST (whose 409 would
+  // otherwise read as an error while the first run is starting fine).
+  const inFlight = useRef(false);
+  const [starting, setStarting] = useState(false);
+
+  /** Follows this product's already-active run, if any; returns its id. */
+  const attachActive = useCallback(async () => {
+    if (!productId) return undefined;
+    const runs = await api<RunSummary[]>(`/runs?product_id=${encodeURIComponent(productId)}&limit=1`);
+    const active = runs.find((r) => isActiveRunStatus(r.status));
+    if (!active) return undefined;
+    if (runRef.current?.runId !== active.id) attach(active.id, active.total_jobs, active.started_at);
+    return active.id;
+  }, [productId, attach]);
+
   const start = useCallback(
     async (body?: { pincodes?: string[]; platforms?: string[] }) => {
-      if (!productId) return;
+      if (!productId || inFlight.current) return undefined;
+      inFlight.current = true;
+      setStarting(true);
       setStartError(null);
       try {
-        const { run_id, estimated_credits } = await api<{ run_id: string; estimated_credits: number }>(
+        const { run_id, total_jobs, estimated_credits } = await api<{ run_id: string; total_jobs?: number; estimated_credits: number }>(
           `/products/${productId}/runs`,
           { method: "POST", json: body ?? {} },
         );
-        attach(run_id, estimated_credits ?? 0);
+        attach(run_id, total_jobs ?? estimated_credits ?? 0);
         return run_id;
       } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          // A run is already going (scheduler, another tab): follow it instead of erroring.
+          const active = await attachActive().catch(() => undefined);
+          if (active) return active;
+        }
         setStartError(
           e instanceof ApiError && e.code === "credit_budget_exceeded"
             ? `${e.message} Try fewer pincodes, or upgrade your plan.`
             : errorMessage(e, "Could not start check"),
         );
         return undefined;
+      } finally {
+        inFlight.current = false;
+        setStarting(false);
       }
     },
-    [productId, attach],
+    [productId, attach, attachActive],
   );
 
   /** Stop following and clear the console. */
@@ -579,7 +648,7 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
   };
   const error = startError ?? (run?.phase === "error" ? run.error : null);
 
-  return { start, attach, reset, run, progress, error, running: !!run && !finished };
+  return { start, attach, attachActive, reset, run, progress, error, running: !!run && !finished, starting };
 }
 
 export type UseRun = ReturnType<typeof useRun>;

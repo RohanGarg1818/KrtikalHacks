@@ -5,13 +5,14 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, useApi } from "@/lib/api";
-import type { Competitor, Heatmap, HeatmapPin, Me, Overview, Pincode, PinDetail, ProductCard, Recommendation } from "@/lib/types";
+import { actOnRecommendation, handleDecisionError, refreshActionViews, toastTelegramResult } from "@/lib/recommendations";
+import type { Competitor, Heatmap, HeatmapPin, Me, Overview, Pincode, PinDetail, ProductCard, Recommendation, RunSummary } from "@/lib/types";
 import { platformLabel, rupees, rupeesPrecise, timeAgo, etaLabel } from "@/lib/format";
 import { useFocusTrap, useScrollLock } from "@/lib/a11y";
 import AgentConsole from "@/components/agent/AgentConsole";
 import AgentReplay from "@/components/agent/AgentReplay";
 import { ScreenshotThumb } from "@/components/agent/parts";
-import { useRun } from "@/lib/useRun";
+import { isActiveRunStatus, useRun } from "@/lib/useRun";
 import HeatmapMap from "@/components/heatmap";
 import ProductHeader, { RecheckButton } from "@/components/ProductHeader";
 import { Empty, ErrorCard, STATUS_META, Skeleton, StatusBadge } from "@/components/ui";
@@ -34,6 +35,29 @@ const BOX_BASE = "h-12 rounded-[12px] border-2 border-ink bg-linen";
 const BOX = `${BOX_BASE} shadow-[2px_2px_0_var(--ink)]`;
 /** Clickable control box: the shared press utility draws the same 2px shadow. */
 const BOX_BUTTON = `${BOX_BASE} press press-2`;
+/** `stale_reason` of a pin whose app live mode never checks (Blinkit by default). */
+const UNAVAILABLE = "unavailable";
+const UNAVAILABLE_LABEL = "Not available in live mode";
+
+/** Heatmap API fields beyond the shared types (live-mode availability, stale reasons). */
+type MapPin = HeatmapPin & { stale_reason?: string | null };
+type MapSummary = Heatmap["summary"] & { failed?: number; unavailable?: number };
+type MapData = Omit<Heatmap, "pins" | "summary"> & {
+  pins: MapPin[];
+  summary: MapSummary;
+  unavailable_platforms?: { platform: string; reason: string }[];
+};
+type PinPlatform = PinDetail["platforms"][number] & { unavailable_reason?: string | null };
+/** `GET /products/{id}/runs/estimate`: exactly what a re-check would run and cost. */
+interface RunEstimate {
+  jobs: number;
+  credits: number;
+  platforms: string[];
+  skipped_platforms: { platform: string; reason: string }[];
+  remaining_credits: number | null;
+}
+
+const isUnavailable = (pin: MapPin) => pin.stale_reason === UNAVAILABLE;
 
 export default function HeatmapPage() {
   return (
@@ -135,7 +159,7 @@ function ProductHeatmap({
   const competitors = useApi<Competitor[]>(`/products/${productId}/competitors`);
   const competitorNames = useMemo(() => new Map((competitors.data ?? []).map((c) => [c.id, c.name])), [competitors.data]);
   const qs = new URLSearchParams({ snapshot, ...(platform ? { platform } : {}) }).toString();
-  const heatmap = useApi<Heatmap>(`/products/${productId}/heatmap?${qs}`, { keepPreviousData: true });
+  const heatmap = useApi<MapData>(`/products/${productId}/heatmap?${qs}`, { keepPreviousData: true });
   const overview = useApi<Overview>(`/products/${productId}/overview`);
   const recs = useApi<{ items: Recommendation[] }>(`/products/${productId}/ai/recommendations?status=pending`);
   const detail = useApi<PinDetail>(
@@ -148,16 +172,40 @@ function ProductHeatmap({
     recs.mutate();
   });
 
+  // A run may already be going (scheduler, another tab, the product page): follow it live.
+  const latestRun = useApi<RunSummary[]>(`/runs?product_id=${encodeURIComponent(productId)}&limit=1`, { shouldRetryOnError: false });
+  const attachedOnLoad = useRef(false);
+  /** True when this page's own "Re-check" started the followed run (vs. attaching to one). */
+  const startedHere = useRef(false);
+  const { attach } = run;
+  const hasRun = !!run.run;
+  useEffect(() => {
+    const latest = latestRun.data?.[0];
+    if (attachedOnLoad.current || hasRun || !latest || !isActiveRunStatus(latest.status)) return;
+    attachedOnLoad.current = true;
+    attach(latest.id, latest.total_jobs, latest.started_at);
+  }, [latestRun.data, attach, hasRun]);
+  const startRun = (body?: { pincodes?: string[]; platforms?: string[] }) => {
+    startedHere.current = true;
+    void run.start(body);
+  };
+  const busy = run.running || run.starting;
+
   const cityOf = useMemo(() => Object.fromEntries((catalog.data ?? []).map((c) => [c.code, c.city])), [catalog.data]);
   const allPins = useMemo(() => heatmap.data?.pins ?? [], [heatmap.data]);
   const regions = useMemo(() => [...new Set(allPins.map((p) => cityOf[p.pincode]).filter(Boolean))].sort(), [allPins, cityOf]);
   const pins = useMemo(() => (region ? allPins.filter((p) => cityOf[p.pincode] === region) : allPins), [allPins, region, cityOf]);
-  const counts = useMemo(() => {
+  const counts = useMemo<MapSummary>(() => {
     if (!region && heatmap.data) return heatmap.data.summary;
-    const c = { in_stock: 0, out_of_stock: 0, price_gap: 0, stale: 0, total: pins.length };
-    for (const p of pins) if (p.status in c) c[p.status as keyof typeof c]++;
+    // Same rules as the API summary: never-checkable pins are counted apart from stale ones.
+    const c = { in_stock: 0, out_of_stock: 0, price_gap: 0, stale: 0, unavailable: 0, total: pins.length };
+    for (const p of pins) {
+      if (isUnavailable(p)) c.unavailable++;
+      else if (p.status in c) c[p.status as keyof typeof c]++;
+    }
     return c;
   }, [region, heatmap.data, pins]);
+  const unavailablePlatforms = heatmap.data?.unavailable_platforms ?? [];
   const worst = useMemo(
     () =>
       pins
@@ -173,10 +221,17 @@ function ProductHeatmap({
   const selectedPin = pins.find((p) => p.pincode === selected) ?? null;
 
   const regionLabel = region || (regions.length === 1 ? regions[0] : regions.length ? "All regions" : me.data?.profile.default_city ?? "All regions");
-  const targets = recheck.size ? [...recheck] : selected ? [selected] : [];
-  const runPlatforms = platform ? [platform] : selection.data?.platforms ?? [];
-  const rivalsOn = (pl: string) => (competitors.data ?? []).filter((c) => c.confirmed && c.platform === pl).length;
-  const credits = targets.length * runPlatforms.reduce((n, pl) => n + 1 + rivalsOn(pl), 0);
+  const targets = recheck.size ? [...recheck].sort() : selected ? [selected] : [];
+  // The backend plans the jobs (every confirmed rival on every selected app, minus apps live mode
+  // skips) and prices them (agent checks 1 credit, Amazon/Flipkart page reads free).
+  const estimateQs = new URLSearchParams([...targets.map((t) => ["pincodes", t]), ...(platform ? [["platforms", platform]] : [])]).toString();
+  const estimate = useApi<RunEstimate>(targets.length ? `/products/${productId}/runs/estimate?${estimateQs}` : null, {
+    keepPreviousData: true,
+  });
+  const est = targets.length ? estimate.data : undefined;
+  const runPlatforms = est?.platforms ?? (platform ? [platform] : selection.data?.platforms ?? []);
+  const credits = est?.credits ?? null;
+  const nothingToRun = !!est && est.jobs === 0;
   const prog = run.progress;
   const progLabel = prog ? `${Math.min(prog.done + prog.failed, prog.total)}/${prog.total}` : "";
   const [consoleOpen, setConsoleOpen] = useState(true);
@@ -188,14 +243,20 @@ function ProductHeatmap({
   progRef.current = prog;
   useEffect(() => {
     if (runId) {
-      toast.info("Re-check started — pins update live");
+      toast.info(startedHere.current ? "Re-check started — pins update live" : "A check is already running — following it live");
+      startedHere.current = false;
       setConsoleOpen(true);
     }
   }, [runId]);
+  const runOverdue = !!run.run?.overdue && !runFinished;
+  useEffect(() => {
+    if (runOverdue) toast.info("This check is taking longer than usual — still running, pins update as agents finish");
+  }, [runOverdue]);
   useEffect(() => {
     const p = progRef.current;
     if (!runId || !runFinished || !p) return;
-    if (p.failed) toast.error(`Re-check finished · ${p.done} updated, ${p.failed} failed`);
+    if (p.failed && !p.done) toast.error(`Re-check failed · none of ${p.failed} checks returned data`);
+    else if (p.failed) toast.error(`Re-check partly done · ${p.done} updated, ${p.failed} failed`);
     else toast(`Re-check finished · ${p.done} result${p.done === 1 ? "" : "s"} updated`);
   }, [runId, runFinished]);
   useEffect(() => {
@@ -244,14 +305,14 @@ function ProductHeatmap({
           <div className="flex flex-wrap items-center gap-3">
             {run.running && prog && (
               <span className="chip bg-sand">
-                <span className="dot-typing"><span /><span /><span /></span> Live · {progLabel}
+                <span className="dot-typing"><span /><span /><span /></span> {runOverdue ? "Still running" : "Live"} · {progLabel}
               </span>
             )}
             <RecheckButton
-              onClick={() => run.start()}
-              running={run.running}
+              onClick={() => startRun()}
+              running={busy}
               disabled={product?.paused}
-              label={run.running && prog ? `Checking… ${progLabel}` : undefined}
+              label={run.running && prog ? `Checking… ${progLabel}` : run.starting ? "Starting…" : undefined}
             />
           </div>
         }
@@ -261,6 +322,12 @@ function ProductHeatmap({
       )}
       {run.error && <p className="card mb-6 bg-sand/50 p-3 text-sm font-semibold">{run.error}</p>}
       {product?.paused && <p className="card mb-6 bg-sand/50 p-3 text-sm font-semibold">This product is paused — resume it in Settings to run checks.</p>}
+      {unavailablePlatforms.length > 0 && (
+        <p className="card mb-6 bg-linen p-3 text-sm font-semibold" role="note">
+          {UNAVAILABLE_LABEL}: {unavailablePlatforms.map((u) => `${platformLabel(u.platform)} (${u.reason})`).join("; ")}. Re-checks skip{" "}
+          {unavailablePlatforms.length === 1 ? "it" : "them"}, and {unavailablePlatforms.length === 1 ? "it does" : "they do"} not count against a pin.
+        </p>
+      )}
 
       {run.run && (
         <section className="mb-8" aria-label="TinyFish agents">
@@ -409,7 +476,12 @@ function ProductHeatmap({
             text={overview.data?.summary?.summary_text}
             loading={!overview.data && !overview.error}
             recs={recs.data?.items}
-            onDecided={() => recs.mutate()}
+            onDecided={() => {
+              recs.mutate();
+              overview.mutate();
+              // Approving can start a re-check: follow it live if one is now running.
+              if (!run.running) void run.attachActive().catch(() => undefined);
+            }}
           />
           </Reveal>
           <Reveal delay={0.12}>
@@ -431,32 +503,53 @@ function ProductHeatmap({
           <img src={`${A}/imgContainer20.svg`} alt="" width={18} height={18} />
           <span className="text-[18px] font-semibold leading-[27px]">Snapshot</span>
         </div>
-        <div role="tablist" aria-label="Snapshot time" className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div role="tablist" aria-label="Snapshot time" className="flex flex-wrap items-center gap-1">
           {SNAPSHOTS.map((s) => (
             <button
               key={s.key}
               role="tab"
               aria-selected={snapshot === s.key}
               onClick={() => setSnapshot(s.key)}
-              className={`text-[15px] font-semibold leading-[22.5px] transition-colors ${snapshot === s.key ? "press press-2 rounded-full bg-slate px-4 py-1.5 text-linen" : "text-ink hover:text-slate"}`}
+              className={`inline-flex h-10 items-center rounded-full px-4 text-[15px] font-semibold leading-[22.5px] transition-colors ${snapshot === s.key ? "press press-2 bg-slate text-linen" : "text-ink hover:text-slate"}`}
             >
               {s.label}
             </button>
           ))}
         </div>
-        <button
-          className="btn btn-ink h-11 px-[22px] text-[14px] leading-[21px]"
-          disabled={!targets.length || run.running || product?.paused}
-          title={targets.length ? `${targets.join(", ")} on ${runPlatforms.map(platformLabel).join(", ")}` : "Tap a pin to select it"}
-          onClick={() => run.start({ pincodes: targets, ...(platform ? { platforms: [platform] } : {}) })}
-        >
-          <img src={`${A}/imgContainer21.svg`} alt="" width={12} height={15} />
-          {run.running && prog
-            ? `Checking… ${progLabel}`
-            : targets.length
-              ? `Re-check selected · ${credits} credit${credits === 1 ? "" : "s"}`
-              : "Select a pin to re-check"}
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            className="btn btn-ink h-11 px-[22px] text-[14px] leading-[21px]"
+            disabled={!targets.length || busy || product?.paused || nothingToRun}
+            title={
+              !targets.length
+                ? "Tap a pin to select it"
+                : nothingToRun
+                  ? "None of these apps can be checked in live mode"
+                  : `${targets.join(", ")} on ${runPlatforms.map(platformLabel).join(", ")}${est ? ` · ${est.jobs} check${est.jobs === 1 ? "" : "s"} (you + confirmed rivals)` : ""}`
+            }
+            onClick={() => startRun({ pincodes: targets, ...(platform ? { platforms: [platform] } : {}) })}
+          >
+            <img src={`${A}/imgContainer21.svg`} alt="" width={12} height={15} />
+            {run.running && prog
+              ? `Checking… ${progLabel}`
+              : run.starting
+                ? "Starting…"
+                : !targets.length
+                  ? "Select a pin to re-check"
+                  : nothingToRun
+                    ? "Not available in live mode"
+                    : credits == null
+                      ? "Re-check selected"
+                      : `Re-check selected · ${credits} credit${credits === 1 ? "" : "s"}`}
+          </button>
+          {est && targets.length > 0 && !busy && (
+            <span className="text-[12px] font-semibold text-ink/75">
+              {est.jobs} check{est.jobs === 1 ? "" : "s"}
+              {est.skipped_platforms.length ? ` · skips ${est.skipped_platforms.map((s) => platformLabel(s.platform)).join(", ")}` : ""}
+              {est.remaining_credits != null ? ` · ${est.remaining_credits} credits left today` : ""}
+            </span>
+          )}
+        </div>
       </section>
 
       <AnimatePresence>
@@ -551,7 +644,7 @@ function Menu({
 
 /* ---------- Map overlays ---------- */
 
-function Legend({ counts, hot }: { counts: Heatmap["summary"]; hot: boolean }) {
+function Legend({ counts, hot }: { counts: MapSummary; hot: boolean }) {
   const dot = "grid size-[18px] shrink-0 place-items-center rounded-full border border-ink";
   return (
     <div className="absolute bottom-6 left-6 z-[800] flex flex-col gap-[10px] rounded-[12px] border-2 border-ink bg-linen p-4 text-[14px] font-semibold leading-[21px] shadow-[4px_4px_0_var(--ink)]">
@@ -573,6 +666,12 @@ function Legend({ counts, hot }: { counts: Heatmap["summary"]; hot: boolean }) {
           Not checked recently (<CountUp value={counts.stale} duration={0.6} />)
         </div>
       )}
+      {(counts.unavailable ?? 0) > 0 && (
+        <div className="flex items-center gap-[10px]">
+          <span className={`${dot} border-dashed bg-linen text-[11px] font-bold opacity-50`}>–</span>
+          {UNAVAILABLE_LABEL} (<CountUp value={counts.unavailable ?? 0} duration={0.6} />)
+        </div>
+      )}
       {hot && (
         <div className="flex items-center gap-[10px]">
           <span className={`${dot} border-2 border-dashed border-slate bg-slate/15`} />
@@ -591,14 +690,15 @@ function PinCallout({
   onDetails,
   onClose,
 }: {
-  pin: HeatmapPin;
+  pin: MapPin;
   showRival: boolean;
   inRecheck: boolean;
   onToggleRecheck: () => void;
   onDetails: () => void;
   onClose: () => void;
 }) {
-  const label = STATUS_META[pin.status]?.label ?? pin.status;
+  const unavailable = isUnavailable(pin);
+  const label = unavailable ? UNAVAILABLE_LABEL : STATUS_META[pin.status]?.label ?? pin.status;
   return (
     <>
       <button type="button" onClick={onClose} aria-label="Close" className="absolute right-2 top-1.5 text-[18px] font-bold leading-none text-ink/60 hover:text-ink">×</button>
@@ -606,11 +706,17 @@ function PinCallout({
         {pin.pincode}{pin.area ? ` · ${pin.area}` : ""}
       </p>
       <p className="text-[14px] font-medium leading-[21px]">
-        {label} · {rupeesPrecise(pin.price)} · Checked {timeAgo(pin.checked_at)}
+        {unavailable ? (
+          <>{platformLabel(pin.platform)} · {label}</>
+        ) : (
+          <>
+            {platformLabel(pin.platform)} · {label} · {rupeesPrecise(pin.price)} · Checked {timeAgo(pin.checked_at)}
+          </>
+        )}
       </p>
-      {(showRival || pin.rival_price != null) && (
+      {showRival && !unavailable && (
         <p className="text-[13px] font-medium leading-[19.5px] text-deep">
-          {platformLabel(pin.platform)} · Rival {rupeesPrecise(pin.rival_price)}
+          {pin.rival_price != null ? `Cheapest rival ${rupeesPrecise(pin.rival_price)}` : "No in-stock rival price in the last 24h"}
         </p>
       )}
       <div className="mt-2.5 flex gap-2">
@@ -663,21 +769,20 @@ function AiSummary({
     setMsg(null);
     try {
       if (kind === "send") {
-        const r = await api<{ sent_to_chats?: number }>(`/recommendations/${top.id}/send-telegram`, { method: "POST" });
-        const m = r.sent_to_chats ? `Sent to ${r.sent_to_chats} Telegram chat${r.sent_to_chats === 1 ? "" : "s"}.` : "No Telegram chat linked to this product yet.";
-        setMsg(m);
-        if (r.sent_to_chats) toast(m);
-        else toast.info(m);
+        const r = await actOnRecommendation(top.id, "send-telegram");
+        setMsg(r.message ?? null);
+        toastTelegramResult(r);
       } else {
-        await api(`/recommendations/${top.id}/approve`, { method: "POST" });
-        setMsg("Approved.");
-        toast("Recommendation approved");
+        const r = await actOnRecommendation(top.id, "approve");
+        const m = r?.message || "Recommendation approved";
+        setMsg(m);
+        toast(m);
+        refreshActionViews();
         onDecided();
       }
     } catch (e) {
-      const m = e instanceof Error ? e.message : "Something went wrong";
-      setMsg(m);
-      toast.error(m);
+      setMsg(e instanceof Error ? e.message : "Something went wrong");
+      handleDecisionError(e, onDecided);
     } finally {
       setBusy(null);
     }
@@ -835,15 +940,26 @@ function PinDetailModal({
         </div>
         {error ? <ErrorCard error={error} /> : !detail && <Skeleton className="mt-3 h-40" />}
         <div className="mt-3 space-y-4">
-          {detail?.platforms.map((pl) => {
+          {detail?.platforms.map((row) => {
+            const pl = row as PinPlatform;
             const replayOpen = replayFor === pl.platform;
             const hasTrace = !!(pl.seller.result_id || pl.seller.run_id);
+            const neverChecked = !!pl.unavailable_reason && pl.seller.status === "missing";
             return (
               <div key={pl.platform} className="rounded-xl border-2 border-ink p-3">
                 <div className="flex items-center justify-between">
                   <b>{platformLabel(pl.platform)}</b>
-                  <StatusBadge status={pl.status} />
+                  {neverChecked ? (
+                    <span className="chip border-dashed bg-linen text-ink/75">{UNAVAILABLE_LABEL}</span>
+                  ) : (
+                    <StatusBadge status={pl.status} />
+                  )}
                 </div>
+                {pl.unavailable_reason && (
+                  <p className="mt-1 text-xs text-deep">
+                    {UNAVAILABLE_LABEL}: {pl.unavailable_reason}. Re-checks skip this app{neverChecked ? "." : "; the prices below are from an earlier check."}
+                  </p>
+                )}
                 <table className="mt-2 w-full text-sm">
                   <caption className="sr-only">Prices on {platformLabel(pl.platform)} at {detail.pincode}</caption>
                   <tbody>

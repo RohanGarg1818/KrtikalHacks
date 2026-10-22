@@ -47,8 +47,15 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_key: str = ""
     supabase_jwt_secret: str = ""
+    # JWKS endpoint for asymmetric (ES256/RS256) Supabase access tokens. Blank =
+    # `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. Setting it explicitly also
+    # turns Supabase auth on without SUPABASE_JWT_SECRET.
+    supabase_jwks_url: str = ""
     supabase_storage_bucket: str = "screenshots"
+    # Primary frontend origin: CORS plus the links in Telegram messages.
     frontend_origin: str = "http://localhost:3000"
+    # Extra comma-separated origins allowed by CORS (e.g. a LAN IP or a deploy URL).
+    frontend_origins: str = ""
 
     @field_validator("mock_mode", mode="before")
     @classmethod
@@ -99,9 +106,33 @@ class Settings(BaseSettings):
         )
 
     @property
+    def cors_origins(self) -> list[str]:
+        """FRONTEND_ORIGIN plus every FRONTEND_ORIGINS entry, without trailing slashes."""
+        origins: list[str] = []
+        for raw in (self.frontend_origin, self.frontend_origins):
+            for origin in raw.split(","):
+                origin = origin.strip().rstrip("/")
+                if origin and origin not in origins:
+                    origins.append(origin)
+        return origins
+
+    @property
+    def jwks_url(self) -> str:
+        """Where asymmetric Supabase signing keys are published ("" = unknown)."""
+        if self.supabase_jwks_url.strip():
+            return self.supabase_jwks_url.strip()
+        base = self.supabase_url.strip().rstrip("/")
+        return f"{base}/auth/v1/.well-known/jwks.json" if base else ""
+
+    @property
+    def supabase_auth_configured(self) -> bool:
+        """A JWT secret (HS256) or an explicit JWKS URL (ES256/RS256) is set."""
+        return bool(self.supabase_jwt_secret or self.supabase_jwks_url.strip())
+
+    @property
     def dev_auth_enabled(self) -> bool:
-        """Every request maps to the demo user: never in production, never with a JWT secret."""
-        return not self.is_production and not self.supabase_jwt_secret
+        """Every request maps to the demo user: never in production, never with Supabase auth."""
+        return not self.is_production and not self.supabase_auth_configured
 
     @property
     def auth_mode(self) -> str:
@@ -113,8 +144,10 @@ class Settings(BaseSettings):
 
     def validate_for_startup(self) -> None:
         """Refuse to boot a production process that could not authenticate anyone."""
-        if self.is_production and not self.supabase_jwt_secret:
-            raise RuntimeError("SUPABASE_JWT_SECRET is required when APP_ENV=production")
+        if self.is_production and not self.supabase_auth_configured:
+            raise RuntimeError(
+                "SUPABASE_JWT_SECRET (or SUPABASE_JWKS_URL) is required when APP_ENV=production"
+            )
 
 
 @lru_cache

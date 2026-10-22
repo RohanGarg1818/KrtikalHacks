@@ -13,7 +13,9 @@ import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..config import Settings
+from ..services.storage import screenshot_url_for
+
+__all__ = ["local_media_path", "remove_product_media", "screenshot_url_for"]
 
 logger = logging.getLogger("shelfsense.media")
 
@@ -31,13 +33,6 @@ def local_media_path(url: str | None) -> Path | None:
     if not candidate.is_relative_to(root) or candidate == root:
         return None
     return candidate
-
-
-def screenshot_url_for(result_id: str, url: str | None, settings: Settings) -> str | None:
-    """URL a client should load: production hides `/media` behind the API."""
-    if url and settings.is_production and url.startswith(MEDIA_URL_PREFIX):
-        return f"/api/check-results/{result_id}/screenshot"
-    return url
 
 
 def _remove_dirs(product_ids: list[str]) -> None:

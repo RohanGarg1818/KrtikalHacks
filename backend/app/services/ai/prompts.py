@@ -54,9 +54,20 @@ def recommend_prompt(context: dict) -> tuple[str, list[Turn]]:
         "from the context. When a recommendation proposes a new price, put that "
         "number in evidence.proposed_price; it must respect context.pricing "
         "(floor_price, cost_price plus min_margin_pct, max_change_pct versus "
-        "avg_price). Otherwise set evidence.proposed_price to null. Reply with "
+        "avg_price). Otherwise set evidence.proposed_price to null. Set "
+        "evidence.kind to one of price (a concrete new price), pricing (review "
+        "pricing without a concrete price), restock (fix availability), recheck "
+        "(re-run failed or stale checks), rating, or other. Price advice must "
+        "follow context.price_signal: when its outcome is \"silent\" give no "
+        "price or pricing recommendation; when it is \"adjust\" you may propose "
+        "a price between evidence.safe_floor and evidence.mrp (when set) and "
+        "below avg_price, ideally price_signal.target_price; when it is "
+        "\"hold\" never propose matching the rival — use evidence.kind "
+        "margin_risk to warn that matching would be below the safe floor and "
+        "suggest competing on stock, delivery, or bundles. Reply with "
         'JSON: {"recommendations": [{"priority": "...", "action_text": "...", '
-        '"impact_text": "...", "evidence": {"proposed_price": number|null, ...}}]}'
+        '"impact_text": "...", "evidence": {"kind": "...", '
+        '"proposed_price": number|null, ...}}]}'
     )
     return system, _single(f"Context:\n{_context_block(context)}")
 
@@ -64,8 +75,10 @@ def recommend_prompt(context: dict) -> tuple[str, list[Turn]]:
 def reviews_prompt(context: dict) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
-        + "\nTask: list what customers likely love and complain about, derived "
-        "only from availability, price, and rating signals in the context "
+        + "\nTask: list the seller's own product strengths (loves) and weak "
+        "spots (complaints) as shoppers would experience them, derived only "
+        "from the seller's availability, price, and rating signals in the "
+        "context. These describe the seller's product, never a competitor's "
         "(3-5 short bullet phrases each). Reply with JSON: "
         '{"loves": ["..."], "complaints": ["..."]}'
     )
@@ -77,9 +90,11 @@ def chat_prompt(
 ) -> tuple[str, list[Turn]]:
     system = (
         GUARDRAIL_RULES
-        + "\nTask: answer the seller's question about their product data. "
-        "If the question is unrelated to ShelfSense data, politely say you can "
-        "only help with prices, stock, heatmaps, checks, and weekly insights. "
+        + "\nTask: answer the seller's question about their product data, or "
+        "explain how to use ShelfSense (adding products, pincodes, alerts, "
+        "approvals, credits and plans, Telegram linking). "
+        "If the question is unrelated to ShelfSense, politely say you can "
+        "only help with the seller's ShelfSense data and how to use the app. "
         "Reply with JSON: "
         '{"reply": "...", "actions": [{"label": "...", "path": "..."}], '
         '"evidence": [{"metric": "...", "value": ...}]}. '

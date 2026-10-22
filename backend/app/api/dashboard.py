@@ -18,10 +18,14 @@ from ..schemas.dashboard import (
     DashboardAlert,
     DashboardRecommendation,
     DashboardResponse,
+    PlanMeters,
     StatTile,
     TelegramStatus,
 )
 from ..services.heatmap import take_latest
+from ..services.intelligence import OPEN_ACTION_STATUSES
+from ..services.plans import daily_credits_used, limits_for
+from .products import get_user_plan
 
 router = APIRouter(tags=["dashboard"])
 
@@ -41,6 +45,27 @@ async def get_dashboard(
         .select_from(ProductPincode)
         .join(Product, Product.id == ProductPincode.product_id)
         .where(Product.user_id == user.id)
+    )
+    per_product_pincodes = (
+        select(func.count(func.distinct(ProductPincode.pincode)).label("pins"))
+        .join(Product, Product.id == ProductPincode.product_id)
+        .where(Product.user_id == user.id)
+        .group_by(ProductPincode.product_id)
+        .subquery()
+    )
+    max_pincodes_per_product = await session.scalar(
+        select(func.max(per_product_pincodes.c.pins))
+    )
+    plan = await get_user_plan(session, user.id)
+    limits = limits_for(plan)
+    meters = PlanMeters(
+        plan=plan,
+        products=product_count or 0,
+        product_limit=limits.products,
+        max_pincodes_per_product=max_pincodes_per_product or 0,
+        pincode_limit_per_product=limits.pincodes,
+        credits_today=await daily_credits_used(session, user.id),
+        daily_credit_budget=limits.daily_credit_budget,
     )
     week_ago = datetime.now(UTC) - timedelta(days=7)
     checks_this_week = await session.scalar(
@@ -154,7 +179,7 @@ async def get_dashboard(
         .join(Product, Product.id == Recommendation.product_id)
         .where(
             Product.user_id == user.id,
-            Recommendation.status == "approved",
+            Recommendation.status.in_(OPEN_ACTION_STATUSES),
             Recommendation.decided_at >= week_ago,
         )
     )
@@ -206,6 +231,7 @@ async def get_dashboard(
         ),
     ]
     return DashboardResponse(
+        meters=meters,
         tiles=tiles,
         alerts=[
             DashboardAlert(

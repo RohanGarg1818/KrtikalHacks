@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { use, useEffect, useId, useState, type ReactNode } from "react";
 import { api, ApiError, errorMessage, useApi } from "@/lib/api";
 import { toast } from "@/lib/toast";
-import type { AlertRule, Competitor, Me, Pincode, Plans, Product } from "@/lib/types";
-import { ALERT_KIND_LABEL, FREQUENCY_LABEL, platformLabel } from "@/lib/format";
+import type { AlertRule, Competitor, Me, Pincode, Plans, PriceSensitivity, Product } from "@/lib/types";
+import { ALERT_KIND_LABEL, FREQUENCY_LABEL, platformLabel, rupees } from "@/lib/format";
+import { MIN_CONSECUTIVE_RUNS, MIN_GAP_RUPEES, SENSITIVITY_OPTIONS, priceBounds, sensitivityPct } from "@/lib/pricing";
 import ProductHeader from "@/components/ProductHeader";
 import { CardSkeleton, ErrorCard, Toggle, useConfirm } from "@/components/ui";
 
@@ -189,7 +190,17 @@ const isHttpUrl = (v: string) => {
 
 type LinksDraft = { name: string; brand: string; search_query: string; urls: Record<string, string> };
 type FreqDraft = { check_frequency: string; volatile_boost: boolean };
-type GuardDraft = { cost_price: string; floor_price: string; min_margin_pct: string; max_change_pct: string; approval_required: boolean };
+type GuardDraft = {
+  cost_price: string;
+  floor_price: string;
+  min_margin_pct: string;
+  max_change_pct: string;
+  commission_pct: string;
+  mrp: string;
+  price_sensitivity: PriceSensitivity;
+  round_to_price_point: boolean;
+  approval_required: boolean;
+};
 type PinsDraft = { codes: Set<string>; platforms: Set<string> };
 
 export default function ProductSettingsPage({ params }: { params: Promise<{ id: string }> }) {
@@ -215,8 +226,11 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
   const [guardDraft, setGuardDraft] = useState<GuardDraft | null>(null);
   const [pinsDraft, setPinsDraft] = useState<PinsDraft | null>(null);
   const [plain, setPlain] = useState("");
+  const [ruleError, setRuleError] = useState<string | null>(null);
   const [rival, setRival] = useState({ name: "", platform: "blinkit" });
   const [suggestions, setSuggestions] = useState<Omit<Competitor, "id" | "product_id">[]>([]);
+  // "tinyfish" = live TinyFish Search results; "demo" = generic placeholders.
+  const [suggestionSource, setSuggestionSource] = useState<string | null>(null);
 
   if (product.error) return <ErrorCard error={product.error} onRetry={() => product.mutate()} />;
 
@@ -236,6 +250,10 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
     floor_price: str(p?.floor_price),
     min_margin_pct: str(p?.min_margin_pct),
     max_change_pct: str(p?.max_change_pct),
+    commission_pct: str(p?.commission_pct),
+    mrp: str(p?.mrp),
+    price_sensitivity: p?.price_sensitivity ?? "regular",
+    round_to_price_point: !!p?.round_to_price_point,
     approval_required: p?.approval_required ?? true,
   };
   const pinsForm: PinsDraft = pinsDraft ?? { codes: new Set(selection.data?.pincodes ?? []), platforms: new Set(selection.data?.platforms ?? []) };
@@ -263,6 +281,8 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
   const floor = parseNum(guardForm.floor_price);
   const margin = parseNum(guardForm.min_margin_pct);
   const change = parseNum(guardForm.max_change_pct);
+  const commission = parseNum(guardForm.commission_pct);
+  const mrp = parseNum(guardForm.mrp);
   const guardErrors = {
     cost: cost === undefined || (cost != null && cost < 0) ? "Enter a price of 0 or more, or leave it empty" : null,
     floor:
@@ -273,7 +293,26 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
           : null,
     margin: margin == null || margin < 0 || margin > 100 ? "Enter a percentage from 0 to 100" : null,
     change: change == null || change < 0 || change > 50 ? "Enter a percentage from 0 to 50" : null,
+    commission:
+      commission === undefined || (commission != null && (commission < 0 || commission > 60))
+        ? "Enter a percentage from 0 to 60, or leave it empty"
+        : null,
+    mrp:
+      mrp === undefined || (mrp != null && mrp <= 0)
+        ? "Enter a price above 0, or leave it empty"
+        : mrp != null && floor != null && mrp < floor
+          ? "MRP is below your floor price"
+          : mrp != null && cost != null && mrp < cost
+            ? "MRP is below your cost price"
+            : null,
   };
+  const bounds = priceBounds({
+    cost: cost ?? null,
+    commission: commission ?? null,
+    margin: margin ?? null,
+    floor: floor ?? null,
+  });
+  const triggerPct = sensitivityPct(guardForm.price_sensitivity);
   const guardInvalid = Object.values(guardErrors).some(Boolean);
 
   const overLimit = limits?.pincodes != null && pinsForm.codes.size > limits.pincodes;
@@ -294,10 +333,18 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
   async function addRule() {
     const text = plain.trim();
     if (!text) return;
+    setRuleError(null);
     await run(
       "parse",
       async () => {
-        const rule = await api<AlertRule>(`/products/${id}/alert-rules/parse`, { method: "POST", json: { text } });
+        let rule: AlertRule;
+        try {
+          rule = await api<AlertRule>(`/products/${id}/alert-rules/parse`, { method: "POST", json: { text } });
+        } catch (e) {
+          // Unsupported wording: keep the explanation (and the examples it lists) next to the input.
+          if (e instanceof ApiError && e.status === 422) setRuleError(e.message);
+          throw e;
+        }
         await api(`/products/${id}/alert-rules`, { method: "PUT", json: { rules: [...ruleList, { ...rule, active: true }] } });
         await rules.mutate();
         setPlain("");
@@ -541,8 +588,9 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                       run(
                         "suggest",
                         async () => {
-                          const r = await api<{ suggestions: typeof suggestions }>(`/products/${id}/competitors/discover`, { method: "POST", json: {} });
+                          const r = await api<{ suggestions: typeof suggestions; source: string }>(`/products/${id}/competitors/discover`, { method: "POST", json: {} });
                           setSuggestions(r.suggestions);
+                          setSuggestionSource(r.source);
                           if (!r.suggestions.length) toast.info("No new rivals found for this product");
                         },
                         { fail: "Couldn't find suggestions" },
@@ -555,17 +603,22 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
               </form>
               {suggestions.length > 0 && (
                 <div className="pt-5">
-                  <p className="eyebrow text-slate mb-3">Suggestions · tap to track</p>
+                  <p className="eyebrow text-slate mb-1">{suggestionSource === "demo" ? "Demo suggestions" : "Suggestions"} · tap to track</p>
+                  <p className="text-[14px] leading-5 text-ink/80 mb-3">
+                    {suggestionSource === "demo"
+                      ? "Live rival search isn't available, so these are generic placeholders: each one tracks the top listing for your product category (your brand removed) on that platform."
+                      : "Found by TinyFish Search. Rivals you already track are left out."}
+                  </p>
                   <div className="flex flex-wrap gap-2">
-                    {suggestions.map((s, i) => (
+                    {suggestions.map((s) => (
                       <button
                         key={`${s.platform}-${s.name}`}
                         type="button"
                         className="pill"
-                        disabled={busy[`sg-${i}`]}
+                        disabled={busy[`sg-${s.platform}-${s.name}`]}
                         onClick={() =>
                           run(
-                            `sg-${i}`,
+                            `sg-${s.platform}-${s.name}`,
                             async () => {
                               await api(`/products/${id}/competitors`, { method: "POST", json: { ...s, confirmed: true } });
                               setSuggestions((list) => list.filter((x) => x !== s));
@@ -575,7 +628,7 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                           )
                         }
                       >
-                        {busy[`sg-${i}`] ? "Adding…" : `+ ${s.name} · ${platformLabel(s.platform)}`}
+                        {busy[`sg-${s.platform}-${s.name}`] ? "Adding…" : `+ ${s.name} · ${platformLabel(s.platform)}`}
                       </button>
                     ))}
                   </div>
@@ -681,6 +734,12 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                 </Row>
                 <ToggleRow label="Check more often when prices are volatile" checked={freqForm.volatile_boost} onChange={(v) => editFreq({ volatile_boost: v })} />
               </div>
+              <p className="text-[14px] leading-5 text-ink/80">
+                When your price or a rival&apos;s moves by 5% or more within 48 hours, scheduled checks run one step faster (for example daily → every 12 hours) until prices settle.
+                {freqForm.volatile_boost && FREQUENCIES.indexOf(freqForm.check_frequency) <= FREQUENCIES.indexOf(minFreq)
+                  ? ` You're already on your plan's fastest schedule (${(FREQUENCY_LABEL[minFreq] ?? minFreq).toLowerCase()}), so this has no effect unless you pick a slower one or upgrade.`
+                  : ""}
+              </p>
               {freqTooFast && <p className="text-[14px] font-semibold mt-2">Your plan doesn&apos;t allow this frequency any more. Pick a slower one.</p>}
               <SaveRow status={<Saved k="freq" />}>
                 <button
@@ -713,12 +772,27 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                 }}
               >
                 <Field label="New rule" className="flex-1">
-                  <input className={INPUT} placeholder="Alert me if we go out of stock in South Delhi" value={plain} maxLength={500} onChange={(e) => setPlain(e.target.value)} />
+                  <input
+                    className={INPUT}
+                    placeholder="Alert me if we go out of stock in South Delhi"
+                    value={plain}
+                    maxLength={500}
+                    aria-invalid={ruleError ? true : undefined}
+                    onChange={(e) => {
+                      setPlain(e.target.value);
+                      setRuleError(null);
+                    }}
+                  />
                 </Field>
                 <button type="submit" className="btn btn-sand h-12 px-[22px]" disabled={!plain.trim() || busy.parse}>
                   {busy.parse ? "Adding…" : "Add rule"}
                 </button>
               </form>
+              {ruleError && (
+                <p className="text-[14px] leading-5 font-semibold bg-sand border-2 border-ink rounded-[8px] px-3 py-2 mt-3" role="alert">
+                  {ruleError}
+                </p>
+              )}
               <div className="flex flex-col pt-3" aria-busy={busy.rules}>
                 {rules.error && <p className="text-[15px] py-4">Couldn&apos;t load rules: {errorMessage(rules.error)}</p>}
                 {rules.data && ruleList.length === 0 && <p className="text-[15px] text-ink/75 py-4">No rules yet. Add one above.</p>}
@@ -774,6 +848,10 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                         floor_price: floor ?? null,
                         min_margin_pct: margin as number,
                         max_change_pct: change as number,
+                        commission_pct: commission ?? null,
+                        mrp: mrp ?? null,
+                        price_sensitivity: guardForm.price_sensitivity,
+                        round_to_price_point: guardForm.round_to_price_point,
                         approval_required: guardForm.approval_required,
                       });
                       setGuardDraft(null);
@@ -795,10 +873,68 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                   <Field label="Max price change per day (%)" hint="0–50" error={guardDraft ? guardErrors.change : null}>
                     <input type="number" inputMode="decimal" min={0} max={50} className={INPUT} value={guardForm.max_change_pct} onChange={(e) => editGuard({ max_change_pct: e.target.value })} />
                   </Field>
+                  <Field label="Platform commission (%)" hint="What the app keeps from each sale (quick commerce is usually 18–35%). Raises your break-even." error={guardDraft ? guardErrors.commission : null}>
+                    <input type="number" inputMode="decimal" min={0} max={60} step="0.1" placeholder="e.g. 25" className={INPUT} value={guardForm.commission_pct} onChange={(e) => editGuard({ commission_pct: e.target.value })} />
+                  </Field>
+                  <Field label="MRP (₹)" hint="Printed maximum retail price. We never suggest a price above it." error={guardDraft ? guardErrors.mrp : null}>
+                    <input type="number" inputMode="decimal" min={0} step="0.01" className={INPUT} value={guardForm.mrp} onChange={(e) => editGuard({ mrp: e.target.value })} />
+                  </Field>
                 </div>
+                <fieldset className="mt-6 min-w-0">
+                  <legend className="text-[14px] leading-5 font-semibold pb-2">Price sensitivity</legend>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {SENSITIVITY_OPTIONS.map((o) => {
+                      const on = guardForm.price_sensitivity === o.value;
+                      return (
+                        <label
+                          key={o.value}
+                          className={`flex flex-col gap-1 rounded-[14px] border-2 border-ink p-4 cursor-pointer transition-colors focus-within:ring-2 focus-within:ring-ink focus-within:ring-offset-2 ${on ? "bg-sand" : "bg-linen hover:bg-sand/40"}`}
+                        >
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 text-[16px] font-semibold">
+                              <input
+                                type="radio"
+                                name={`${uid}-sensitivity`}
+                                value={o.value}
+                                checked={on}
+                                onChange={() => editGuard({ price_sensitivity: o.value })}
+                                className="accent-ink"
+                              />
+                              {o.label}
+                            </span>
+                            <span className="chip bg-linen">{o.pct}%</span>
+                          </span>
+                          <span className="text-[13px] leading-5 text-ink/80">{o.blurb}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
                 <div className="flex flex-col pt-3 mt-3 border-t border-ink/20">
+                  <ToggleRow label="Round to price points (₹49, ₹99…)" checked={guardForm.round_to_price_point} onChange={(v) => editGuard({ round_to_price_point: v })} />
                   <ToggleRow label="Every action needs my approval" checked={guardForm.approval_required} onChange={(v) => editGuard({ approval_required: v })} />
                 </div>
+                <p className="mt-3 text-[14px] leading-[21px] bg-linen border-2 border-ink/20 rounded-[12px] px-4 py-3" aria-live="polite">
+                  {bounds.safeFloor != null ? (
+                    <>
+                      Safe floor <b>{rupees(bounds.safeFloor, 2)}</b>
+                      {bounds.breakEven != null && (
+                        <>
+                          {" · "}break-even <b>{rupees(bounds.breakEven, 2)}</b>
+                        </>
+                      )}
+                      {mrp != null && (
+                        <>
+                          {" · "}ceiling <b>{rupees(mrp, 2)}</b> (MRP)
+                        </>
+                      )}
+                      {" · "}
+                    </>
+                  ) : (
+                    <>Add a cost price to protect your margin · </>
+                  )}
+                  we&apos;ll suggest a price change when you&apos;re more than <b>{triggerPct}%</b> (and ₹{MIN_GAP_RUPEES}) above the cheapest rival for {MIN_CONSECUTIVE_RUNS} checks in a row.
+                </p>
                 <SaveRow status={<Saved k="guard" />}>
                   <button type="submit" className="btn btn-primary h-12 px-[26px]" disabled={!guardDraft || guardInvalid || busy.guard}>
                     {busy.guard ? "Saving…" : "Save guardrails"}

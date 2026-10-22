@@ -40,7 +40,7 @@ class ReviewsOut(BaseModel):
 # In-app destinations a chat action may link to; anything else is dropped.
 ACTION_PATH_RE = re.compile(
     r"^/(dashboard|products(/[\w-]+(/(settings|telegram|heatmap))?)?|heatmap|help"
-    r"|settings|agents)(\?[^\s]*)?$"
+    r"|settings|agents)(\?[^\s#]*)?(#[\w-]+)?$"
 )
 
 
@@ -135,6 +135,12 @@ def grounding_violations(
     for change in context.get("recent_changes", []):
         if change.get("pincode"):
             allowed_pins.add(str(change["pincode"]))
+    for item in context.get("portfolio") or ():
+        if isinstance(item, dict):
+            allowed_pins.update(str(pin) for pin in item.get("oos_pins") or ())
+    for row in context.get("platform_prices") or ():
+        if isinstance(row, dict):
+            allowed_pins.update(str(pin) for pin in row.get("oos_pins") or ())
     allowed_prices = {
         round(float(context[key]), 2)
         for key in (
@@ -154,6 +160,18 @@ def grounding_violations(
     for key in ("floor_price", "cost_price"):
         if isinstance(pricing.get(key), (int, float)):
             allowed_prices.add(round(float(pricing[key]), 2))
+    signal = context.get("price_signal") or {}
+    signal_evidence = signal.get("evidence") or {}
+    for value in (
+        signal.get("target_price"),
+        *(
+            signal_evidence.get(key)
+            for key in ("safe_floor", "break_even", "mrp", "cheapest_rival", "gap_rupees")
+        ),
+    ):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            allowed_prices.add(round(float(value), 2))
+    allowed_prices.update(_chat_context_prices(context))
     allowed_prices.update(round(price, 2) for price in extra_prices or ())
     violations: list[str] = []
     for pin in _PINCODE_RE.findall(text):
@@ -166,6 +184,47 @@ def grounding_violations(
         if not any(abs(price - known) < 0.011 for known in allowed_prices):
             violations.append(f"unknown price {price}")
     return violations
+
+
+_PLATFORM_PRICE_FIELDS = ("my_price", "my_checkout", "rival_price", "rival_checkout")
+
+
+def _chat_context_prices(context: dict) -> set[float]:
+    """Prices the chat context carries beyond the headline KPIs.
+
+    Per-platform comparisons (shelf and checkout), portfolio rows, and the text
+    of stored recommendations are all measured or already-vetted numbers, so a
+    model may quote them without tripping the grounding check.
+    """
+    prices: set[float] = set()
+
+    def add(value: object) -> None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            prices.add(round(float(value), 2))
+
+    def add_platforms(rows: object) -> None:
+        for row in rows if isinstance(rows, list) else ():
+            if isinstance(row, dict):
+                for field in _PLATFORM_PRICE_FIELDS:
+                    add(row.get(field))
+                # The rupee gap to the rival is derived from the same measured pair.
+                for mine, theirs in (("my_price", "rival_price"), ("my_checkout", "rival_checkout")):
+                    a, b = row.get(mine), row.get(theirs)
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                        add(abs(float(a) - float(b)))
+
+    add_platforms(context.get("platform_prices"))
+    for item in context.get("portfolio") or ():
+        if isinstance(item, dict):
+            add(item.get("avg_price"))
+            add(item.get("cheapest_rival"))
+            add_platforms(item.get("platform_prices"))
+    for key in ("pending_recommendations", "approved_actions"):
+        for item in context.get(key) or ():
+            if isinstance(item, dict):
+                for raw in _RUPEE_PRICE_RE.findall(str(item.get("action_text") or "")):
+                    add(float(raw.replace(",", "")))
+    return prices
 
 
 def proposed_prices(task: str, result: BaseModel) -> set[float]:

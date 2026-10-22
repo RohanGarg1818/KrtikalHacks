@@ -3,10 +3,12 @@
 /* eslint-disable @next/next/no-img-element */
 import { use, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, downloadFile, errorMessage, useApi } from "@/lib/api";
-import type { Competitor, CompetitorRow, Overview, Product, Reviews, RunSummary, Weekly } from "@/lib/types";
+import type { Competitor, CompetitorRow, GenerateResult, Overview, Product, Reviews, RunSummary, Weekly } from "@/lib/types";
 import { FREQUENCY_LABEL, pct, platformLabel, rupees, timeAgo } from "@/lib/format";
+import { refreshActionViews } from "@/lib/recommendations";
 import { toast } from "@/lib/toast";
 import { isActiveRunStatus, useRun } from "@/lib/useRun";
+import ActionPlan from "@/components/ActionPlan";
 import AgentConsole from "@/components/agent/AgentConsole";
 import ProductHeader, { RecheckButton } from "@/components/ProductHeader";
 import RecommendationCard from "@/components/RecommendationCard";
@@ -41,7 +43,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
     const latest = activeRuns.data?.[0];
     if (attached.current || hasRun || !latest || !isActiveRunStatus(latest.status)) return;
     attached.current = true;
-    attach(latest.id, latest.total_jobs);
+    attach(latest.id, latest.total_jobs, latest.started_at);
   }, [activeRuns.data, attach, hasRun]);
 
   const announced = useRef<string | null>(null);
@@ -52,16 +54,22 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
       announced.current = r.runId;
       const ok = r.completed - r.failed;
       if (r.phase === "failed") toast.error(`Check failed: none of ${r.total} checks returned data`);
-      else toast(`Check finished: ${ok} result${ok === 1 ? "" : "s"}${r.failed ? `, ${r.failed} failed` : ""}`);
+      else toast(`${r.status === "partial" ? "Check partly done" : "Check finished"}: ${ok} result${ok === 1 ? "" : "s"}${r.failed ? `, ${r.failed} failed` : ""}`);
     }
   }, [run.run]);
 
   async function generate(kind: "summary" | "recommendations" | "reviews") {
     setBusy(kind);
     try {
-      await api(`/products/${id}/ai/${kind}`, { method: "POST" });
+      const res = await api<Partial<GenerateResult> & { changed?: boolean }>(`/products/${id}/ai/${kind}`, { method: "POST" });
       refreshAll();
-      toast(kind === "summary" ? "Summary updated" : kind === "reviews" ? "Review insights updated" : "Recommendations refreshed");
+      if (kind === "summary") toast("Summary updated");
+      else if (kind === "reviews") (res.changed ? toast : toast.info)(res.message || "Review insights refreshed");
+      else {
+        // The backend says what the refresh actually did (new, replaced, auto-approved, or nothing).
+        (res.recommendations?.length ? toast : toast.info)(res.message || "Recommendations checked");
+        if (res.auto_approved) refreshActionViews();
+      }
     } catch (e) {
       toast.error(errorMessage(e, "Could not generate that right now"));
     } finally {
@@ -86,7 +94,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
             <RecheckButton
               onClick={() => run.start()}
               running={run.running}
-              disabled={p?.paused}
+              disabled={p?.paused || run.starting}
               label={run.running ? `Checking… ${progDone}/${prog!.total}` : p?.paused ? "Paused" : undefined}
             />
           }
@@ -140,15 +148,33 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
             ) : pending.length === 0 ? (
               <Empty title="All caught up">No pending actions for this product.</Empty>
             ) : (
-              pending.map((r) => <RecommendationCard key={r.id} rec={r} onChange={() => overview.mutate()} />)
+              pending.map((r) => (
+                <RecommendationCard
+                  key={r.id}
+                  rec={r}
+                  onChange={() => overview.mutate()}
+                  onApproved={(res) => {
+                    // Approving a re-check started a real run: follow it in the console above.
+                    if (res.effect === "run_started" && res.run_id) attach(res.run_id, 0);
+                  }}
+                />
+              ))
             )}
+          </div>
+          <div className="section-head mt-10">
+            <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Action plan</h2>
+          </div>
+          <div className="pt-5">
+            <ActionPlan productId={id} />
           </div>
           {p && (
             <div className="mt-6 flex items-start gap-3 border-2 border-dashed border-ink/40 rounded-[16px] px-5 py-4">
               <span className="eyebrow text-slate shrink-0">Guardrails</span>
               <p className="text-[15px] leading-[22.5px] text-ink/80">
                 Never below the {rupees(p.floor_price)} floor or a {p.min_margin_pct}% margin; at most {p.max_change_pct}% price change a day.
-                {p.approval_required ? " Every action waits for your approval." : ""}
+                {p.approval_required
+                  ? " Every action waits for your approval."
+                  : " New recommendations that pass these rules are approved automatically; re-checks still wait for you."}
               </p>
             </div>
           )}
@@ -250,8 +276,8 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
             <Skeleton className="h-24 mt-5" />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-5">
-              <ReviewList title="Buyers love" items={reviews.data.loves} good />
-              <ReviewList title="Rivals' complaints" items={reviews.data.complaints} />
+              <ReviewList title="Working for you" items={reviews.data.loves} good />
+              <ReviewList title="Your weak spots" items={reviews.data.complaints} />
             </div>
           )}
         </div>
@@ -260,9 +286,14 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
             <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Win without a price war</h2>
           </div>
           <ul className="flex flex-col gap-3 pt-5 stagger">
-            {(reviews.data?.complaints ?? []).slice(0, 3).map((c) => (
+            {(reviews.data?.rival_complaints ?? []).slice(0, 3).map((c) => (
               <Idea key={c} title={`Rivals get “${c}”.`}>Call out how you do better in your title, images and first bullet.</Idea>
             ))}
+            {reviews.data && !reviews.data.rival_complaints?.length && reviews.data.complaints[0] && (
+              <Idea title={`Fix your weak spot first: “${reviews.data.complaints[0]}”.`}>
+                No rival review data yet; ShelfSense tracks rivals&apos; price and stock, not their reviews.
+              </Idea>
+            )}
             <Idea title="Bundle instead of discounting.">A 2-pack or combo protects your per-unit price.</Idea>
             <Idea title="Local offer, not a national cut.">Target only pincodes with a price gap.</Idea>
           </ul>

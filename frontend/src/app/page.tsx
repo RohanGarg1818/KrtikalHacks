@@ -553,10 +553,14 @@ function FloatCards() {
         <p className={FLOAT_LABEL}><span className="size-3 rounded-full bg-sand border border-ink" />Awaiting approval</p>
         <p className="pt-1 text-[30px] leading-[36px] font-extrabold">₹2 price cut</p>
         <p className="text-[12px] leading-4 font-medium">Amul Taaza 500 ml · Zepto · rival 9% cheaper</p>
-        <div className="flex gap-[10px] pt-3">
-          <Link href="/dashboard" className={`flex-1 text-center bg-linen border-2 border-ink rounded-[12px] shadow-[3px_3px_0_var(--ink)] px-[14px] py-[10px] text-[12px] leading-4 font-bold ${PRESS}`}>Reject</Link>
-          <Link href="/dashboard" className={`flex-1 text-center bg-slate text-linen border-2 border-ink rounded-[12px] shadow-[3px_3px_0_var(--ink)] px-[14px] py-[10px] text-[12px] leading-4 font-bold ${PRESS}`}>Approve</Link>
+        {/* Static preview of the dashboard card: the real Approve / Reject live in the app. */}
+        <div className="flex gap-[10px] pt-3" aria-hidden>
+          <span className="flex-1 text-center bg-linen border-2 border-dashed border-ink/60 rounded-[12px] px-[14px] py-[10px] text-[12px] leading-4 font-bold text-ink/70 select-none">Reject</span>
+          <span className="flex-1 text-center bg-slate/80 text-linen border-2 border-dashed border-ink/60 rounded-[12px] px-[14px] py-[10px] text-[12px] leading-4 font-bold select-none">Approve</span>
         </div>
+        <Link href="/dashboard" className="pt-2 text-[12px] leading-4 font-bold underline underline-offset-4 self-start">
+          Preview · see it live on the dashboard →
+        </Link>
       </div>
       <div className={`${FLOAT} gap-1 w-full lg:w-[290px] -rotate-1 lg:absolute lg:right-[62.4px] lg:bottom-[45.5px]`}>
         <div className="flex items-center justify-between gap-2">

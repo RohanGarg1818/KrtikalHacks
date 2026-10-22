@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, errorMessage, useApi } from "@/lib/api";
 import { platformLabel } from "@/lib/format";
 import { toast } from "@/lib/toast";
-import type { Me, Pincode, Plans, Product } from "@/lib/types";
+import { SENSITIVITY_OPTIONS } from "@/lib/pricing";
+import type { Me, Pincode, Plans, PriceSensitivity, Product } from "@/lib/types";
 import { useDialogA11y } from "./ui";
 
 /** Apps checked live by TinyFish (Blinkit blocks automated browsers). */
@@ -14,6 +15,10 @@ const DEFAULT_PLATFORMS = ["zepto", "instamart", "amazon", "flipkart"];
 interface Suggestion { name: string; platform: string; url: string | null; search_query: string | null; confirmed: boolean }
 
 const STEP_TITLES = ["Add a product", "Confirm competitors", "Where do you sell?"];
+
+/** Backend limits (schemas/products.py): name 300 chars, brand 200; the name is also the search query (500). */
+const NAME_MAX = 300;
+const BRAND_MAX = 200;
 
 /** Path segments that are routing noise or IDs, never the product's name. */
 const NOISE = /^(dp|gp|prn|prid|pid|p|pd|ip|itm|item|items|product|products|buy|s|search|en|in|www|html?)$/i;
@@ -100,8 +105,17 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   const [leaving, setLeaving] = useState(false);
   const [input, setInput] = useState("");
   const [brand, setBrand] = useState("");
+  // Optional "Advanced pricing": the same fields as Settings → Price guardrails.
+  const [pricing, setPricing] = useState<{ cost: string; commission: string; mrp: string; sensitivity: PriceSensitivity }>({
+    cost: "",
+    commission: "",
+    mrp: "",
+    sensitivity: "regular",
+  });
   const [product, setProduct] = useState<Product | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  // "tinyfish" = live search results; "demo"/"mock" = generic placeholders.
+  const [suggestSource, setSuggestSource] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   // Competitors already POSTed, keyed by platform + name, so retries never duplicate them.
   const [saved, setSaved] = useState<Set<string>>(new Set());
@@ -115,8 +129,25 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   const planName = me.data?.plan ?? plans.data?.current;
-  const limit = plans.data?.plans.find((p) => p.plan === planName)?.pincodes ?? null;
+  const planLimits = plans.data?.plans.find((p) => p.plan === planName);
+  const limit = planLimits?.pincodes ?? null;
+  const competitorLimit = planLimits?.competitors ?? null;
   const preview = parseInput(input);
+  const nameTooLong = preview.name.length > NAME_MAX;
+  const num = (v: string) => (v.trim() === "" ? null : Number(v));
+  const costValue = num(pricing.cost);
+  const commissionValue = num(pricing.commission);
+  const mrpValue = num(pricing.mrp);
+  const pricingError =
+    costValue != null && !(Number.isFinite(costValue) && costValue >= 0)
+      ? "Cost price must be 0 or more"
+      : commissionValue != null && !(Number.isFinite(commissionValue) && commissionValue >= 0 && commissionValue <= 60)
+        ? "Commission must be from 0 to 60%"
+        : mrpValue != null && !(Number.isFinite(mrpValue) && mrpValue > 0)
+          ? "MRP must be above 0"
+          : mrpValue != null && costValue != null && mrpValue < costValue
+            ? "MRP is below your cost price"
+            : null;
 
   function requestClose() {
     if (busy) return; // never abandon a request halfway
@@ -151,12 +182,27 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
     const { name, link } = parseInput(input);
     await run(async () => {
       let p = product;
-      const fields = { name, brand: brand.trim() || null, search_query: name };
+      const fields = {
+        name,
+        brand: brand.trim() || null,
+        search_query: name,
+        cost_price: costValue,
+        commission_pct: commissionValue,
+        mrp: mrpValue,
+        price_sensitivity: pricing.sensitivity,
+      };
       if (!p) {
         // check_frequency is omitted on purpose: the backend defaults it to the plan minimum.
         p = await api<Product>("/products", { method: "POST", json: fields });
         setProduct(p);
-      } else if (p.name !== fields.name || (p.brand ?? null) !== fields.brand) {
+      } else if (
+        p.name !== fields.name ||
+        (p.brand ?? null) !== fields.brand ||
+        (p.cost_price ?? null) !== fields.cost_price ||
+        (p.commission_pct ?? null) !== fields.commission_pct ||
+        (p.mrp ?? null) !== fields.mrp ||
+        p.price_sensitivity !== fields.price_sensitivity
+      ) {
         p = await api<Product>(`/products/${p.id}`, { method: "PATCH", json: fields });
         setProduct(p);
       }
@@ -168,9 +214,10 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
           toast.info("Couldn't save the product link — you can add it later in settings");
         }
       }
-      const found = await api<{ suggestions: Suggestion[] }>(`/products/${p.id}/competitors/discover`, { method: "POST", json: {} });
+      const found = await api<{ suggestions: Suggestion[]; source?: string }>(`/products/${p.id}/competitors/discover`, { method: "POST", json: {} });
       setSuggestions(found.suggestions);
-      setPicked(new Set(found.suggestions.map((_, i) => i).slice(0, 3)));
+      setSuggestSource(found.source ?? null);
+      setPicked(new Set(found.suggestions.map((_, i) => i).slice(0, Math.min(3, competitorLimit ?? 3))));
       setStep(2);
     });
   }
@@ -178,16 +225,21 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
   async function saveCompetitors() {
     if (!product) return;
     await run(async () => {
+      let duplicates = 0;
       for (const i of picked) {
         if (saved.has(keyOf(suggestions[i]))) continue;
         try {
           await api(`/products/${product.id}/competitors`, { method: "POST", json: { ...suggestions[i], confirmed: true } });
         } catch (e) {
-          // 409 = already tracked (e.g. saved before a network blip): count it as saved.
-          if (!(e instanceof ApiError && e.status === 409)) throw e;
+          // Already tracked (e.g. saved before a network blip, or the same rival twice): count it as saved.
+          // Any other conflict (like a plan limit) is a real error.
+          const duplicate = e instanceof ApiError && e.status === 409 && (e.code === "duplicate_competitor" || e.code === "conflict");
+          if (!duplicate) throw e;
+          duplicates++;
         }
         setSaved((s) => new Set(s).add(keyOf(suggestions[i])));
       }
+      if (duplicates) toast.info(`${duplicates} competitor${duplicates === 1 ? " was" : "s were"} already tracked`);
       setStep(3);
     });
   }
@@ -226,6 +278,7 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
     return !t || pc.code.includes(t) || pc.area_name.toLowerCase().includes(t) || pc.city.toLowerCase().includes(t);
   });
   const overLimit = limit != null && codes.size > limit;
+  const competitorsOver = competitorLimit != null && picked.size > competitorLimit;
 
   return (
     <div
@@ -298,7 +351,7 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (input.trim() && !busy) void createProduct();
+                  if (input.trim() && !nameTooLong && !pricingError && !busy) void createProduct();
                 }}
               >
                 <p className="text-[16px] leading-6 text-ink/80 mt-1">Paste a product link or type its name.</p>
@@ -310,11 +363,18 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
                       className="input h-12 px-[18px] text-[16px] font-normal"
                       placeholder="Amul Taaza Toned Milk 500 ml"
                       value={input}
+                      // Links can be long (the name is taken from them); typed names are checked against NAME_MAX.
                       maxLength={2000}
                       onChange={(e) => setInput(e.target.value)}
-                      aria-describedby={preview.link ? "add-product-preview" : undefined}
+                      aria-invalid={nameTooLong || undefined}
+                      aria-describedby={nameTooLong ? "add-product-name-error" : preview.link ? "add-product-preview" : undefined}
                     />
                   </label>
+                  {nameTooLong && (
+                    <p id="add-product-name-error" className="text-[14px] leading-5 -mt-3 font-semibold" role="alert">
+                      Product names can be up to {NAME_MAX} characters ({preview.name.length} now).
+                    </p>
+                  )}
                   {preview.link && (
                     <p id="add-product-preview" className="text-[14px] leading-5 -mt-3 text-ink/80">
                       We&apos;ll call it <b className="font-semibold text-ink">{preview.name}</b>
@@ -325,10 +385,49 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
                     <span className="text-[14px] leading-5 font-semibold">
                       Brand <span className="font-medium text-ink/75">(optional)</span>
                     </span>
-                    <input className="input h-12 px-[18px] text-[16px] font-normal" placeholder="Amul" value={brand} maxLength={120} onChange={(e) => setBrand(e.target.value)} />
+                    <input className="input h-12 px-[18px] text-[16px] font-normal" placeholder="Amul" value={brand} maxLength={BRAND_MAX} onChange={(e) => setBrand(e.target.value)} />
                   </label>
+                  <details className="group border-t border-ink/20 pt-4">
+                    <summary className="cursor-pointer text-[14px] font-semibold text-slate select-none">
+                      Advanced pricing <span className="font-medium text-ink/75">(optional — you can set this later in Settings)</span>
+                    </summary>
+                    <div className="grid gap-4 sm:grid-cols-3 pt-4">
+                      <label className="flex flex-col gap-2 min-w-0">
+                        <span className="text-[14px] leading-5 font-semibold">Cost price (₹)</span>
+                        <input type="number" inputMode="decimal" min={0} step="0.01" className="input h-12 px-[18px] text-[16px] font-normal" value={pricing.cost} onChange={(e) => setPricing({ ...pricing, cost: e.target.value })} />
+                      </label>
+                      <label className="flex flex-col gap-2 min-w-0">
+                        <span className="text-[14px] leading-5 font-semibold">Commission (%)</span>
+                        <input type="number" inputMode="decimal" min={0} max={60} step="0.1" placeholder="e.g. 25" className="input h-12 px-[18px] text-[16px] font-normal" value={pricing.commission} onChange={(e) => setPricing({ ...pricing, commission: e.target.value })} />
+                      </label>
+                      <label className="flex flex-col gap-2 min-w-0">
+                        <span className="text-[14px] leading-5 font-semibold">MRP (₹)</span>
+                        <input type="number" inputMode="decimal" min={0} step="0.01" className="input h-12 px-[18px] text-[16px] font-normal" value={pricing.mrp} onChange={(e) => setPricing({ ...pricing, mrp: e.target.value })} />
+                      </label>
+                    </div>
+                    <label className="flex flex-col gap-2 pt-4">
+                      <span className="text-[14px] leading-5 font-semibold">Price sensitivity</span>
+                      <select
+                        className="input h-12 px-[18px] text-[16px] font-normal cursor-pointer"
+                        value={pricing.sensitivity}
+                        onChange={(e) => setPricing({ ...pricing, sensitivity: e.target.value as PriceSensitivity })}
+                      >
+                        {SENSITIVITY_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label} — suggest a price change above a {o.pct}% gap
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[13px] leading-5 text-ink/80">{SENSITIVITY_OPTIONS.find((o) => o.value === pricing.sensitivity)?.blurb}</span>
+                    </label>
+                    {pricingError && (
+                      <p className="text-[13px] leading-5 font-semibold bg-sand border-2 border-ink rounded-[8px] px-2 py-1 mt-3" role="alert">
+                        {pricingError}
+                      </p>
+                    )}
+                  </details>
                 </div>
-                <button type="submit" className="btn btn-primary h-12 mt-6 w-full" disabled={!input.trim() || busy}>
+                <button type="submit" className="btn btn-primary h-12 mt-6 w-full" disabled={!input.trim() || nameTooLong || !!pricingError || busy}>
                   {busy ? "Finding competitors…" : product ? "Try again →" : "Find competitors →"}
                 </button>
               </form>
@@ -337,6 +436,11 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
             {step === 2 && (
               <>
                 <p className="text-[16px] leading-6 text-ink/80 mt-1">We found similar products. Pick the ones to track.</p>
+                {suggestSource && suggestSource !== "tinyfish" && suggestions.length > 0 && (
+                  <p className="mt-3 inline-flex items-center gap-2 rounded-[10px] border-2 border-ink bg-sand px-3 py-1.5 text-[13px] leading-5 font-semibold">
+                    Demo suggestions · live competitor search needs a TinyFish API key. Edit or add real rivals later in settings.
+                  </p>
+                )}
                 <ul className="flex flex-col gap-3 mt-6 stagger">
                   {suggestions.length === 0 && <li className="text-[15px] text-ink/75">No suggestions found — you can add rivals later in settings.</li>}
                   {suggestions.map((s, i) => {
@@ -364,11 +468,16 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
                     );
                   })}
                 </ul>
+                {competitorsOver && (
+                  <p className="text-[14px] mt-3 font-semibold" role="alert">
+                    Your plan tracks up to {competitorLimit} competitors per product. Unselect {picked.size - competitorLimit!}, or upgrade in Settings.
+                  </p>
+                )}
                 <div className="flex gap-3 mt-6">
                   <button type="button" className="btn btn-ghost h-12" disabled={busy} onClick={() => setStep(1)}>
                     Back
                   </button>
-                  <button type="button" className="btn btn-primary h-12 flex-1" disabled={busy} onClick={saveCompetitors}>
+                  <button type="button" className="btn btn-primary h-12 flex-1" disabled={busy || competitorsOver} onClick={saveCompetitors}>
                     {busy ? "Saving…" : picked.size ? `Track ${picked.size} competitor${picked.size === 1 ? "" : "s"} →` : "Skip for now →"}
                   </button>
                 </div>
@@ -415,7 +524,15 @@ export default function AddProductDialog({ onClose }: { onClose: () => void }) {
                   />
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto p-1 -m-1">
-                  {!pincodes.data && <p className="text-[14px] text-ink/75 col-span-full">Loading pincodes…</p>}
+                  {!pincodes.data && pincodes.error && (
+                    <div className="col-span-full flex flex-wrap items-center gap-3 text-[14px]" role="alert">
+                      <span className="font-semibold">Couldn&apos;t load pincodes: {errorMessage(pincodes.error)}</span>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => pincodes.mutate()}>
+                        Try again
+                      </button>
+                    </div>
+                  )}
+                  {!pincodes.data && !pincodes.error && <p className="text-[14px] text-ink/75 col-span-full">Loading pincodes…</p>}
                   {pincodes.data && shownPins.length === 0 && <p className="text-[14px] text-ink/75 col-span-full">No pincodes match “{pinFilter}”.</p>}
                   {shownPins.map((pc) => (
                     <label

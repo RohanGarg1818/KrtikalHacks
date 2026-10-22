@@ -119,10 +119,12 @@ export function StatTile({
 }) {
   const bg = { ink: "bg-ink text-linen", sand: "bg-sand text-ink", sage: "bg-sage text-ink", slate: "bg-slate text-linen", linen: "bg-linen text-ink" }[tone];
   return (
-    <div className={`card ${bg} flex flex-col justify-between p-[26px] min-w-0`} style={{ minHeight: height }}>
+    <div className={`card ${bg} flex flex-col gap-4 p-[26px] min-w-0`} style={{ minHeight: height }}>
       <p className="eyebrow">{eyebrow}</p>
+      {/* Number sits a fixed step under the eyebrow and the caption pins to the bottom, so
+          numbers line up across a row of tiles even when one caption wraps. */}
       {(count != null || value != null) && (
-        <p className="font-display text-[64px] leading-[68px] sm:text-[80px] sm:leading-[80px] tracking-[-1.6px] -mt-1">
+        <p className="font-display text-[64px] leading-[68px] sm:text-[80px] sm:leading-[80px] tracking-[-1.6px]">
           {count != null ? (
             <>
               <CountUp value={count} format={format} />
@@ -133,7 +135,7 @@ export function StatTile({
           )}
         </p>
       )}
-      {caption != null && <p className="text-[15px] leading-[22.5px] font-semibold">{caption}</p>}
+      {caption != null && <p className="mt-auto text-[15px] leading-[22.5px] font-semibold">{caption}</p>}
       {children}
     </div>
   );
@@ -231,9 +233,12 @@ export function Meter({ value, max, label, dark }: { value: number; max: number 
   return (
     <div className="flex flex-col gap-1">
       <div className={`flex justify-between gap-3 text-[14px] leading-[21px] font-medium ${dark ? "text-linen" : "text-ink"}`}>
-        <span>
-          {label} <CountUp value={value} />
-          {limited ? `/${max}` : ""}
+        <span className="min-w-0">
+          {label}{" "}
+          <span className="whitespace-nowrap tabular-nums">
+            <CountUp value={value} />
+            {limited ? `/${max}` : ""}
+          </span>
         </span>
         {!limited && <span className={dark ? "text-sand" : "text-slate"}>Unlimited</span>}
       </div>
@@ -284,7 +289,7 @@ export function Toggle({
         className={`relative shrink-0 w-[52px] h-[28px] rounded-full border-2 border-ink transition-colors disabled:cursor-not-allowed ${checked ? "bg-slate" : "bg-linen"}`}
       >
         <span
-          className={`absolute top-[2px] left-[2px] size-[20px] rounded-full border-2 border-ink transition-[transform,background-color] ${checked ? "translate-x-[24px] bg-linen" : "bg-ink"}`}
+          className={`absolute left-[3px] top-1/2 -translate-y-1/2 size-[20px] rounded-full border-2 border-ink transition-[translate,background-color] duration-200 ease-out ${checked ? "translate-x-[24px] bg-linen" : "bg-ink"}`}
         />
       </button>
     </label>

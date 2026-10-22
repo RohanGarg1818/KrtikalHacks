@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
@@ -24,6 +24,7 @@ from ..models.telegram import TelegramLink, TelegramLinkCode
 from ..models.user import Subscription, User, UserSettings
 from ..schemas.me import ProfileResponse
 from ..schemas.settings import (
+    OverLimitProduct,
     PlanChangeRequest,
     PlanChangeResponse,
     UserSettingsResponse,
@@ -50,6 +51,10 @@ PRODUCT_EXPORT_FIELDS = (
     "min_margin_pct",
     "max_change_pct",
     "floor_price",
+    "commission_pct",
+    "mrp",
+    "price_sensitivity",
+    "round_to_price_point",
     "check_frequency",
     "volatile_boost",
     "approval_required",
@@ -199,6 +204,8 @@ async def build_account_export(session: AsyncSession, user: User) -> dict:
                         row, ("kind", "threshold", "rule_text", "rule_json", "active")
                     )
                     for row in owned_by(rules, product.id)
+                    # Internal marker for "user cleared every rule", not a rule.
+                    if row.kind != "rules_cleared"
                 ],
             }
             for product in products
@@ -254,7 +261,8 @@ async def change_plan(
 
     Existing products are reconciled with the new limits: check frequencies are
     clamped to the plan minimum and active products beyond the product cap
-    (newest first) are paused.
+    (newest first) are paused. Products tracking more pincodes or competitors
+    than the new plan allows are listed in ``over_limit`` (nothing is deleted).
     """
     if app_settings.is_production:
         raise HTTPException(
@@ -294,6 +302,7 @@ async def change_plan(
         for product in [product for product in products if not product.paused][cap:]:
             product.paused = True
             paused += 1
+    over_limit = await products_over_limit(session, products, payload.plan)
     await session.commit()
     return PlanChangeResponse(
         plan=payload.plan,
@@ -301,7 +310,57 @@ async def change_plan(
         test_mode=True,
         adjusted_products=adjusted,
         paused_products=paused,
+        over_limit=over_limit,
     )
+
+
+async def products_over_limit(
+    session: AsyncSession, products: list[Product], plan: str
+) -> list[OverLimitProduct]:
+    """Products whose pincode or competitor count exceeds the plan's per-product limits."""
+    ids = [product.id for product in products]
+    if not ids:
+        return []
+    pincode_counts = dict(
+        (
+            await session.execute(
+                select(
+                    ProductPincode.product_id,
+                    func.count(func.distinct(ProductPincode.pincode)),
+                )
+                .where(ProductPincode.product_id.in_(ids))
+                .group_by(ProductPincode.product_id)
+            )
+        ).all()
+    )
+    competitor_counts = dict(
+        (
+            await session.execute(
+                select(Competitor.product_id, func.count(Competitor.id))
+                .where(Competitor.product_id.in_(ids))
+                .group_by(Competitor.product_id)
+            )
+        ).all()
+    )
+    limits = limits_for(plan)
+    rows = []
+    for product in products:
+        pincodes = int(pincode_counts.get(product.id, 0))
+        competitors = int(competitor_counts.get(product.id, 0))
+        if (limits.pincodes is not None and pincodes > limits.pincodes) or (
+            competitors > limits.competitors
+        ):
+            rows.append(
+                OverLimitProduct(
+                    product_id=product.id,
+                    name=product.name,
+                    pincodes=pincodes,
+                    pincode_limit=limits.pincodes,
+                    competitors=competitors,
+                    competitor_limit=limits.competitors,
+                )
+            )
+    return rows
 
 
 @router.get("/me/export", response_model=None)

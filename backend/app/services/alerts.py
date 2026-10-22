@@ -29,7 +29,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
@@ -43,6 +43,7 @@ from ..utils.geo import in_city_zone
 from .ai.fallback import FallbackAIProvider
 from .heatmap import selected_pairs
 from .insights import _latest_rival_rows, _latest_seller_rows
+from .price_thresholds import SENSITIVITY_THRESHOLDS, product_threshold_pct
 
 logger = logging.getLogger("shelfsense.alerts")
 
@@ -58,7 +59,15 @@ ALERT_KINDS = (
 )
 KIND_ALIASES = {"rating_drop": "rating_below"}
 DEFAULT_RATING_THRESHOLD = 4.0
-DEFAULT_GAP_THRESHOLD_PCT = 5.0
+# Rules without their own threshold use the product's price-sensitivity
+# threshold (essential 4%, regular 7%, premium 10%), the same bar the price
+# recommendations use. Explicit user thresholds are never changed.
+DEFAULT_GAP_THRESHOLD_PCT = SENSITIVITY_THRESHOLDS["regular"]
+
+
+def default_gap_threshold(product: Product) -> float:
+    return product_threshold_pct(product)
+
 ALERT_MESSAGE_LIMIT = 2000
 DEFERRED_ALERT_WINDOW = timedelta(hours=24)
 
@@ -78,16 +87,75 @@ def default_alert_rules(product: Product) -> list[dict]:
         },
         {
             "kind": "price_gap_pct",
-            "threshold": DEFAULT_GAP_THRESHOLD_PCT,
-            "rule_text": f"Price is more than {DEFAULT_GAP_THRESHOLD_PCT}% above the rival",
+            "threshold": default_gap_threshold(product),
+            "rule_text": (
+                f"Price is more than {default_gap_threshold(product):g}% above the rival"
+            ),
         },
     ]
 
 
-async def effective_rules(
+# Kind of the placeholder row written when the seller removes every rule, so an
+# emptied list stays empty instead of falling back to the defaults. It is not
+# an alert kind, so evaluation and the API never surface it.
+RULES_CLEARED_KIND = "rules_cleared"
+
+# Kinds a chat can receive on Telegram, plus the two non-alert streams.
+TELEGRAM_ALERT_KINDS = (
+    "oos_any",
+    "oos_area",
+    "price_change_pct",
+    "price_gap_pct",
+    "rating_below",
+    "rival_oos",
+    "custom",
+)
+TELEGRAM_STREAMS = (*TELEGRAM_ALERT_KINDS, "recommendations", "briefing")
+# Stored ``TelegramLink.alert_types`` (a NOT NULL JSON list):
+#   []        every alert kind and stream (the default for new links)
+#   ["none"]  nothing at all — the seller unselected every option
+#   [...]     exactly those kinds / streams
+# The API exposes the same as ``null`` (everything), ``[]`` (nothing), or a list.
+TELEGRAM_NOTHING = "none"
+
+
+def telegram_types_out(stored: list | None) -> list[str] | None:
+    """Stored ``alert_types`` → API value (None = everything, [] = nothing)."""
+    if not stored:
+        return None
+    return [str(item) for item in stored if item != TELEGRAM_NOTHING]
+
+
+def telegram_types_in(value: list[str] | None) -> list[str]:
+    """API value → stored ``alert_types``."""
+    if value is None:
+        return []
+    chosen = list(dict.fromkeys(str(item) for item in value))
+    if not chosen:
+        return [TELEGRAM_NOTHING]
+    if set(TELEGRAM_STREAMS) <= set(chosen):
+        return []
+    return chosen
+
+
+def link_wants(link: TelegramLink, stream: str) -> bool:
+    """Whether a linked chat opted into an alert kind, "recommendations" or "briefing"."""
+    stored = link.alert_types or []
+    if not stored:
+        return True
+    return KIND_ALIASES.get(stream, stream) in {
+        KIND_ALIASES.get(str(item), str(item)) for item in stored
+    }
+
+
+async def stored_rules(
     session: AsyncSession, product: Product
 ) -> list[AlertRule | dict]:
-    """Active stored rules; defaults only when the product has no rule rows."""
+    """Every rule the seller sees, active or not.
+
+    Defaults apply only while the product has never had rules saved; once the
+    seller removed them all, a placeholder row keeps the list empty.
+    """
     stored = list(
         (
             await session.scalars(
@@ -97,7 +165,38 @@ async def effective_rules(
     )
     if not stored:
         return default_alert_rules(product)
-    return [rule for rule in stored if rule.active]
+    return [rule for rule in stored if rule.kind != RULES_CLEARED_KIND]
+
+
+async def effective_rules(
+    session: AsyncSession, product: Product
+) -> list[AlertRule | dict]:
+    """Rules to evaluate: the active subset of ``stored_rules``."""
+    return [
+        rule
+        for rule in await stored_rules(session, product)
+        if _rule_field(rule, "active", True)
+    ]
+
+
+async def replace_alert_rules(
+    session: AsyncSession, product_id: str, rules: list[dict]
+) -> None:
+    """Replace a product's rules; an empty list is remembered as "no rules"."""
+    await session.execute(delete(AlertRule).where(AlertRule.product_id == product_id))
+    if rules:
+        session.add_all(AlertRule(product_id=product_id, **rule) for rule in rules)
+    else:
+        session.add(
+            AlertRule(
+                product_id=product_id,
+                kind=RULES_CLEARED_KIND,
+                rule_text="All alert rules removed",
+                rule_json={},
+                active=False,
+            )
+        )
+    await session.commit()
 
 
 def _rule_field(rule: AlertRule | dict, name: str, default=None):
@@ -342,7 +441,9 @@ async def _rule_candidates(
     if kind == "rating_below":
         return _rating_candidates(ev, _rule_threshold(rule, DEFAULT_RATING_THRESHOLD) or 0.0)
     if kind == "price_gap_pct":
-        return _gap_candidates(ev, _rule_threshold(rule, DEFAULT_GAP_THRESHOLD_PCT) or 0.0)
+        return _gap_candidates(
+            ev, _rule_threshold(rule, default_gap_threshold(ev.product)) or 0.0
+        )
     if kind == "rival_oos":
         return _rival_oos_candidates(ev)
     if kind == "custom":
@@ -471,7 +572,7 @@ def _within_quiet_hours(user_settings: UserSettings | None, now_local) -> bool:
     return current >= start_minutes or current < end_minutes
 
 
-def _telegram_allowed(user_settings: UserSettings | None) -> bool:
+def telegram_allowed(user_settings: UserSettings | None) -> bool:
     channels = user_settings.channels if user_settings is not None else None
     return not isinstance(channels, dict) or channels.get("telegram", True) is not False
 
@@ -523,7 +624,7 @@ async def deliver_alerts(
     for alert in alerts:
         photo = await alert_photo(session, alert)
         for link in links_by_product.get(alert.product_id, []):
-            if link.alert_types and alert.kind not in link.alert_types:
+            if not link_wants(link, alert.kind):
                 continue
             if alert.created_at < link.connected_at:
                 continue
@@ -531,7 +632,7 @@ async def deliver_alerts(
             if user is None:
                 continue
             user_settings = settings_rows.get(link.user_id)
-            if not _telegram_allowed(user_settings):
+            if not telegram_allowed(user_settings):
                 continue
             try:
                 local_now = datetime.now(ZoneInfo(user.timezone))

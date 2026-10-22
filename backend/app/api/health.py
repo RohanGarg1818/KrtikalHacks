@@ -28,6 +28,7 @@ async def health(
         },
         auth_mode=settings.auth_mode,
         tinyfish_mode=settings.tinyfish_mode,
+        billing_mode="live" if settings.is_production else "test",
         bot_running=bool(getattr(request.app.state, "bot_running", False)),
         scheduler_running=bool(getattr(request.app.state, "scheduler_running", False)),
     )
