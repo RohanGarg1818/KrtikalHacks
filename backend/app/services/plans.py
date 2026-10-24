@@ -134,3 +134,64 @@ async def remaining_credits_today(
 def credits_exhausted(plan: str, used: int) -> bool:
     budget = limits_for(plan).daily_credit_budget
     return budget is not None and used >= budget
+
+
+# ---------------------------------------------------------------- check frequency caps
+# Automated (scheduled) checks run at most twice a day per product, whatever the plan or
+# frequency setting says; manual re-checks ("Re-check now", Telegram, approving a re-check
+# recommendation) are capped per product per calendar month (UTC).
+SCHEDULED_CHECKS_PER_DAY = 2
+SCHEDULED_MIN_INTERVAL_HOURS = 24 / SCHEDULED_CHECKS_PER_DAY
+MANUAL_CHECKS_PER_MONTH = 10
+
+
+def month_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    now = now or datetime.now(UTC)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start, end
+
+
+async def manual_checks_used(
+    session: AsyncSession, product_id: str, now: datetime | None = None
+) -> int:
+    from sqlalchemy import or_
+
+    from ..models.checks import CheckRun
+
+    start, _ = month_bounds(now)
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(CheckRun)
+            .where(
+                CheckRun.product_id == product_id,
+                CheckRun.trigger == "manual",
+                # Queued runs have no start time yet but still count.
+                or_(CheckRun.started_at >= start, CheckRun.started_at.is_(None)),
+            )
+        )
+        or 0
+    )
+
+
+def out_of_checks_message(resets_at: datetime) -> str:
+    return (
+        f"Out of check now: all {MANUAL_CHECKS_PER_MONTH} manual checks for this product are "
+        f"used this month. They reset on {resets_at:%d %b}. Automatic checks still run "
+        f"{SCHEDULED_CHECKS_PER_DAY} times a day."
+    )
+
+
+async def enforce_manual_check_limit(session: AsyncSession, product_id: str) -> int:
+    """Raise 429 ``manual_check_limit`` when the month's manual checks are used; else return used."""
+    used = await manual_checks_used(session, product_id)
+    if used >= MANUAL_CHECKS_PER_MONTH:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "manual_check_limit",
+                "message": out_of_checks_message(month_bounds()[1]),
+            },
+        )
+    return used

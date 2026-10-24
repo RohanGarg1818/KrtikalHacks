@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..config import get_settings
 from ..db import SessionLocal
@@ -28,6 +28,8 @@ from ..models.user import Subscription, User, UserSettings
 from .alerts import deliver_important_digests, link_wants, telegram_allowed
 from .plans import (
     FREQUENCY_HOURS,
+    SCHEDULED_CHECKS_PER_DAY,
+    SCHEDULED_MIN_INTERVAL_HOURS,
     limits_for,
     remaining_credits_today,
 )
@@ -168,6 +170,19 @@ async def scan_due_products() -> int:
                         interval_hours,
                     )
                     interval_hours = boosted
+            # Automated checks: never more often than twice a day, whatever the setting.
+            interval_hours = max(interval_hours, SCHEDULED_MIN_INTERVAL_HOURS)
+            scheduled_today = await session.scalar(
+                select(func.count())
+                .select_from(CheckRun)
+                .where(
+                    CheckRun.product_id == product.id,
+                    CheckRun.trigger == "scheduled",
+                    CheckRun.started_at >= now - timedelta(hours=24),
+                )
+            )
+            if (scheduled_today or 0) >= SCHEDULED_CHECKS_PER_DAY:
+                continue
             active = await session.scalar(
                 select(CheckRun.id)
                 .where(

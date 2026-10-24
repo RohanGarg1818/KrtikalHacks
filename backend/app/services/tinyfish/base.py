@@ -138,12 +138,18 @@ def get_tinyfish_client() -> TinyFishClient:
     from ...config import get_settings
     from .demo_cache import CachedFallbackClient
     from .mock_client import MockTinyFishClient
+    from .shared_cache import SharedCheckCache
 
     settings = get_settings()
+    client: TinyFishClient
     if settings.tinyfish_enabled:
         from .tinyfish_client import TinyFishLiveClient
 
-        return CachedFallbackClient(TinyFishLiveClient(settings), demo=settings.tinyfish_demo)
-    if settings.tinyfish_demo:
-        return CachedFallbackClient(MockTinyFishClient(), demo=True)
-    return MockTinyFishClient()
+        client = CachedFallbackClient(TinyFishLiveClient(settings), demo=settings.tinyfish_demo)
+    elif settings.tinyfish_demo:
+        client = CachedFallbackClient(MockTinyFishClient(), demo=True)
+    else:
+        client = MockTinyFishClient()
+    if settings.check_cache_ttl_seconds > 0:
+        client = SharedCheckCache(client, ttl_seconds=settings.check_cache_ttl_seconds)
+    return client

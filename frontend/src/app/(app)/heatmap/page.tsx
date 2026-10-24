@@ -14,7 +14,7 @@ import AgentReplay from "@/components/agent/AgentReplay";
 import { ScreenshotThumb } from "@/components/agent/parts";
 import { isActiveRunStatus, useRun } from "@/lib/useRun";
 import HeatmapMap from "@/components/heatmap";
-import ProductHeader, { RecheckButton } from "@/components/ProductHeader";
+import ProductHeader, { RecheckButton, useCheckQuota } from "@/components/ProductHeader";
 import { Empty, ErrorCard, STATUS_META, Skeleton, StatusBadge } from "@/components/ui";
 import CountUp from "@/components/motion/CountUp";
 import Reveal from "@/components/motion/Reveal";
@@ -190,6 +190,7 @@ function ProductHeatmap({
     void run.start(body);
   };
   const busy = run.running || run.starting;
+  const { out: checksOut, title: quotaTitle } = useCheckQuota(productId);
 
   const cityOf = useMemo(() => Object.fromEntries((catalog.data ?? []).map((c) => [c.code, c.city])), [catalog.data]);
   const allPins = useMemo(() => heatmap.data?.pins ?? [], [heatmap.data]);
@@ -310,6 +311,7 @@ function ProductHeatmap({
             )}
             <RecheckButton
               onClick={() => startRun()}
+              productId={productId}
               running={busy}
               disabled={product?.paused}
               label={run.running && prog ? `Checking… ${progLabel}` : run.starting ? "Starting…" : undefined}
@@ -520,9 +522,11 @@ function ProductHeatmap({
         <div className="flex flex-col items-end gap-1">
           <button
             className="btn btn-ink h-11 px-[22px] text-[14px] leading-[21px]"
-            disabled={!targets.length || busy || product?.paused || nothingToRun}
+            disabled={!targets.length || busy || product?.paused || nothingToRun || checksOut}
             title={
-              !targets.length
+              checksOut
+                ? quotaTitle
+                : !targets.length
                 ? "Tap a pin to select it"
                 : nothingToRun
                   ? "None of these apps can be checked in live mode"
@@ -535,7 +539,9 @@ function ProductHeatmap({
               ? `Checking… ${progLabel}`
               : run.starting
                 ? "Starting…"
-                : !targets.length
+                : checksOut
+                  ? "Out of check now"
+                  : !targets.length
                   ? "Select a pin to re-check"
                   : nothingToRun
                     ? "Not available in live mode"

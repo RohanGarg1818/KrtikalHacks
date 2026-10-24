@@ -580,3 +580,12 @@ export interface PlanChange {
     competitor_limit: number;
   }[];
 }
+
+/** `GET /products/{id}/check-quota`: manual re-checks left this month (automatic checks run separately). */
+export interface CheckQuota {
+  limit: number;
+  used: number;
+  left: number;
+  resets_at: string;
+  scheduled_per_day: number;
+}

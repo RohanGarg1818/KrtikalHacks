@@ -9,6 +9,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _TEST_DIR = Path(tempfile.mkdtemp(prefix="shelfsense-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(_TEST_DIR / 'test.db').as_posix()}"
 os.environ["APP_ENV"] = "development"
@@ -45,3 +47,13 @@ async def _prepare_database() -> None:
 
 
 asyncio.run(_prepare_database())
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_check_cache():
+    """Each test starts with an empty cross-user check cache."""
+    from app.services.tinyfish.shared_cache import clear_cache
+
+    clear_cache()
+    yield
+    clear_cache()

@@ -34,6 +34,7 @@ from .alerts import deliver_alerts, evaluate_alerts, instant_alerts
 from .events import run_events
 from .insights import detect_changes
 from .intelligence import refresh_intelligence
+from .plans import enforce_manual_check_limit
 from .storage import save_screenshot, screenshot_url_for
 from .tinyfish import TinyFishClient, TinyFishError, get_tinyfish_client
 from .tinyfish.availability import credit_cost, is_fetch_platform, skipped_platforms
@@ -217,6 +218,8 @@ async def create_run(
         raise HTTPException(
             status_code=422, detail="Paused products cannot be checked"
         )
+    if trigger == "manual":
+        await enforce_manual_check_limit(session, product.id)
     settings = get_settings()
     plan = await plan_jobs(session, product, platforms, pincodes)
     jobs = plan.jobs

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { mutate } from "swr";
 import { api, ApiError, errorMessage, streamUrl } from "./api";
 import { mochiEmit } from "./mochi-bus";
 import type {
@@ -631,6 +632,8 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
       } finally {
         inFlight.current = false;
         setStarting(false);
+        // A manual check uses one of the month's re-checks: refresh every "Re-check" button.
+        void mutate(`/products/${productId}/check-quota`);
       }
     },
     [productId, attach, attachActive],

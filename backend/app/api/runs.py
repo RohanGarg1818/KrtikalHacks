@@ -22,6 +22,7 @@ from ..models.product import Pincode, Product, ProductPincode
 from ..models.user import User
 from ..schemas.runs import (
     AppStatus,
+    CheckQuota,
     CheckResultDetail,
     RunCreate,
     RunCreated,
@@ -35,10 +36,14 @@ from ..schemas.runs import (
 )
 from ..services.events import run_events
 from ..services.plans import (
+    MANUAL_CHECKS_PER_MONTH,
+    SCHEDULED_CHECKS_PER_DAY,
     credit_day_start,
     daily_credits_used,
     enforce_pincode_limit,
     limits_for,
+    manual_checks_used,
+    month_bounds,
     remaining_credits_today,
 )
 from ..services.runner import FINISHED_STATUSES, create_run, plan_jobs, schedule_run
@@ -182,6 +187,23 @@ async def resolve_selection(
             + ", ".join(unknown_pincodes),
         )
     return platforms, pincodes
+
+
+@router.get("/products/{product_id}/check-quota", response_model=CheckQuota)
+async def check_quota(
+    product_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> CheckQuota:
+    await get_owned_product(session, user.id, product_id)
+    used = await manual_checks_used(session, product_id)
+    return CheckQuota(
+        limit=MANUAL_CHECKS_PER_MONTH,
+        used=used,
+        left=max(0, MANUAL_CHECKS_PER_MONTH - used),
+        resets_at=month_bounds()[1],
+        scheduled_per_day=SCHEDULED_CHECKS_PER_DAY,
+    )
 
 
 @router.get("/products/{product_id}/runs/estimate", response_model=RunEstimate)

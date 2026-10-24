@@ -4,7 +4,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { useApi } from "@/lib/api";
-import type { Product } from "@/lib/types";
+import type { CheckQuota, Product } from "@/lib/types";
 import { Skeleton } from "./ui";
 
 const TABS = [
@@ -61,11 +61,38 @@ export default function ProductHeader({
   );
 }
 
-export function RecheckButton({ onClick, running, label, disabled }: { onClick: () => void; running?: boolean; label?: string; disabled?: boolean }) {
+export function RecheckButton({
+  onClick,
+  running,
+  label,
+  disabled,
+  productId,
+}: {
+  onClick: () => void;
+  running?: boolean;
+  label?: string;
+  disabled?: boolean;
+  /** When given, the button shows "Out of check now" once the month's manual checks are used. */
+  productId?: string;
+}) {
+  const { out, title } = useCheckQuota(productId);
+  const outNow = out && !running;
   return (
-    <button data-mochi="recheck" className="btn btn-primary h-12 px-[26px] text-[15px]" onClick={onClick} disabled={running || disabled}>
+    <button data-mochi="recheck" className="btn btn-primary h-12 px-[26px] text-[15px]" onClick={onClick} disabled={running || disabled || outNow} title={title}>
       <img src="/figma/shell/refresh.svg" alt="" width={13} height={13} className={running ? "animate-spin" : ""} />
-      {label ?? (running ? "Checking…" : "Re-check now")}
+      {outNow ? "Out of check now" : (label ?? (running ? "Checking…" : "Re-check now"))}
     </button>
   );
+}
+
+/** Manual re-checks left this month for a product, plus the "Out of check now" button state. */
+export function useCheckQuota(productId: string | null | undefined) {
+  const quota = useApi<CheckQuota>(productId ? `/products/${productId}/check-quota` : null);
+  const out = quota.data ? quota.data.left <= 0 : false;
+  const title = quota.data
+    ? out
+      ? `All ${quota.data.limit} manual checks used this month. Resets ${new Date(quota.data.resets_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}; automatic checks still run ${quota.data.scheduled_per_day}× a day.`
+      : `${quota.data.left} of ${quota.data.limit} manual checks left this month`
+    : undefined;
+  return { quota: quota.data, out, title };
 }

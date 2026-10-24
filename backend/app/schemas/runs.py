@@ -122,3 +122,13 @@ class AppStatus(BaseModel):
     method: Literal["agent", "fetch", "simulated", "none"]
     pincode_specific: bool
     detail: str
+
+
+class CheckQuota(BaseModel):
+    """Manual re-checks left this month for one product (automatic checks are separate)."""
+
+    limit: int
+    used: int
+    left: int
+    resets_at: datetime
+    scheduled_per_day: int

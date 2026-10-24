@@ -93,6 +93,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
           action={
             <RecheckButton
               onClick={() => run.start()}
+              productId={id}
               running={run.running}
               disabled={p?.paused || run.starting}
               label={run.running ? `Checking… ${progDone}/${prog!.total}` : p?.paused ? "Paused" : undefined}

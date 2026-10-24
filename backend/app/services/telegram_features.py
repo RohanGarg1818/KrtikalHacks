@@ -31,7 +31,13 @@ from ..models.product import Pincode, Product, ProductPincode
 from ..models.telegram import TelegramLink
 from ..models.user import Subscription
 from .events import run_events
-from .plans import remaining_credits_today
+from .plans import (
+    MANUAL_CHECKS_PER_MONTH,
+    manual_checks_used,
+    month_bounds,
+    out_of_checks_message,
+    remaining_credits_today,
+)
 from .runner import create_run, schedule_run
 
 logger = logging.getLogger("shelfsense.telegram")
@@ -409,9 +415,10 @@ async def handle_product_callback(update, context) -> bool:
         product, link = access
         if action == "r":
             await query.answer()
+            left = await checks_left(session, product.id)
             await query.message.reply_text(
                 report_text(product.name, await compare_summary(session, product.id)),
-                reply_markup=_keyboard([[("🔍 Check now", f"chk:p:{product.id}")]]),
+                reply_markup=_keyboard([[(check_button_label(left), f"chk:p:{product.id}")]]),
             )
             return True
         if _group_blocked(update, link):
@@ -458,20 +465,39 @@ async def handle_product_callback(update, context) -> bool:
 # --------------------------------------------------------------------- /check
 
 
+async def checks_left(session: AsyncSession, product_id: str) -> int:
+    return max(0, MANUAL_CHECKS_PER_MONTH - await manual_checks_used(session, product_id))
+
+
+def check_button_label(left: int) -> str:
+    return "🚫 Out of check now" if left <= 0 else f"🔍 Check now · {left} left"
+
+
+
 async def start_check_flow(message, chat_id: str) -> None:
     async with SessionLocal() as session:
         products = await _owner_products(session, chat_id)
+        left = {p.id: await checks_left(session, p.id) for p in products}
     if not products:
         await _not_connected(message)
         return
     if len(products) == 1:
         await _ask_app(message, products[0])
         return
-    rows = [[(p.name[:40], f"chk:p:{p.id}")] for p in products]
+    rows = [
+        [(f"{p.name[:34]} · {'out of checks' if left[p.id] <= 0 else f'{left[p.id]} left'}", f"chk:p:{p.id}")]
+        for p in products
+    ]
     await message.reply_text("Which product should I check?", reply_markup=_keyboard(rows))
 
 
 async def _ask_app(message, product: Product, *, edit: bool = False) -> None:
+    async with SessionLocal() as session:
+        left = await checks_left(session, product.id)
+    if left <= 0:
+        text = f"🚫 {product.name}: {out_of_checks_message(month_bounds()[1])}"
+        await (message.edit_text(text) if edit else message.reply_text(text))
+        return
     apps = live_apps()
     rows = [
         [(APP_LABELS[p], f"chk:a:{product.id}:{p}") for p in apps[i : i + 2]]
@@ -479,7 +505,7 @@ async def _ask_app(message, product: Product, *, edit: bool = False) -> None:
     ]
     if len(apps) > 1:
         rows.append([(f"🧩 All {len(apps)} apps", f"chk:a:{product.id}:all")])
-    text = f"🔍 Live check for {product.name}\nWhich app?"
+    text = f"🔍 Live check for {product.name} ({left} of {MANUAL_CHECKS_PER_MONTH} manual checks left this month)\nWhich app?"
     if edit:
         await message.edit_text(text, reply_markup=_keyboard(rows))
     else:
@@ -594,6 +620,11 @@ async def handle_check_callback(update, context) -> bool:
         if remaining is not None and remaining < 1:
             await query.answer("No credits left today.")
             return True
+        used = await manual_checks_used(session, product.id)
+        if used >= MANUAL_CHECKS_PER_MONTH:
+            await query.answer("Out of check now")
+            await query.edit_message_text(f"🚫 {product.name}: {out_of_checks_message(month_bounds()[1])}")
+            return True
         # Make the apps part of the product's selection so the heatmap shows them.
         for platform in platforms:
             exists = await session.get(ProductPincode, (product.id, pincode, platform))
@@ -618,7 +649,11 @@ async def handle_check_callback(update, context) -> bool:
             return True
         schedule_run(run.id, product_id=product.id, user_id=product.user_id, jobs=jobs)
     await query.answer("Check started")
-    await query.edit_message_text(f"⏳ Checking {product.name} on {label} · {pincode}…")
+    left = max(0, MANUAL_CHECKS_PER_MONTH - used - 1)
+    await query.edit_message_text(
+        f"⏳ Checking {product.name} on {label} · {pincode}…\n"
+        f"{left} of {MANUAL_CHECKS_PER_MONTH} manual checks left this month."
+    )
     task = asyncio.create_task(_follow_check(query.message, run.id, product.name, label, pincode))
     _watchers.add(task)
     task.add_done_callback(_watchers.discard)

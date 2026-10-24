@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # earlier live runs) instead of calling TinyFish. Failed live checks always
     # fall back to that cache when it has the same app + pincode.
     tinyfish_demo: bool = False
+    # Reuse an identical check (app + pincode + product) across users for this long; 0 = off.
+    check_cache_ttl_seconds: int = 7200
 
     @property
     def live_platforms(self) -> set[str]:
