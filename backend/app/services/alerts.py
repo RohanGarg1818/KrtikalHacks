@@ -273,27 +273,72 @@ class _Evaluation:
         return place[0] if place else pincode
 
 
-def _candidate(kind: str, message: str, evidence: dict, dedupe_key: str) -> dict:
+def _candidate(
+    kind: str, message: str, evidence: dict, severity: str, dedupe_key: str
+) -> dict:
     return {
         "kind": kind,
         "message": message[:ALERT_MESSAGE_LIMIT],
         "evidence": evidence,
+        "severity": severity,
         "dedupe_key": dedupe_key[:500],
     }
 
 
-def _oos_candidates(ev: _Evaluation, kind: str, pins: set[str] | None, rule_key: str):
-    product = ev.product
-    for (platform, pincode), row in ev.seller_latest.items():
-        if row.in_stock is not False or (pins is not None and pincode not in pins):
-            continue
-        yield _candidate(
-            kind,
-            f"{product.name} is out of stock in {ev.area(pincode)} ({pincode}) "
-            f"on {platform}.",
-            {"platform": platform, "pincode": pincode, "price": row.price},
-            f"{rule_key}:{product.id}:{platform}:{pincode}:{ev.day}",
-        )
+# ---------------------------------------------------------------- noise control
+#
+# Each rule kind used to emit one alert per (platform, pincode) pair, every time
+# the condition was still true. That is why a single out-of-stock product could
+# raise a dozen identical-looking alerts. The functions below instead:
+#
+#   1. combine every affected pincode/platform into ONE alert per product per
+#      run (``_*_items`` collect the raw hits; ``_combined_candidate`` turns
+#      them into one candidate);
+#   2. alert only when the problem *enters*, *gets meaningfully worse*, or
+#      *recovers* — not on every run it is merely still true ("state machine"
+#      kept as the previous Alert row's ``evidence.state``, see
+#      ``_last_open_alert``);
+#   3. round price gaps into bands (slightly / notably / far above) instead of
+#      keying on exact rupee values, and ignore rupee-tiny moves, so a few
+#      paise of noise never counts as "worse".
+#
+# ``severity`` (urgent / important / info) decides delivery speed, not whether
+# the alert is kept — every alert still lands in the inbox either way.
+
+# Price moves/gaps under this many rupees are noise, however large the % looks
+# on a cheap item (e.g. a ₹0.20 move on a ₹0.50 product is technically "40%").
+MIN_PRICE_MOVE_RUPEES = 2.0
+# An open problem re-alerts only once it has grown by at least half the rule's
+# own threshold (e.g. a 7%-threshold product needs the gap to widen by 3.5pp).
+WORSEN_FRACTION = 0.5
+# A rating has to fall by this much since the last alert to be worth a new one.
+RATING_DROP_STEP = 0.2
+# Share of checked pincodes out of stock before "out of stock" counts as urgent.
+OOS_URGENT_FRACTION = 0.3
+# Price-gap / price-change percentage points above which the alert is urgent.
+GAP_URGENT_PCT = 50.0
+PRICE_CHANGE_URGENT_PCT = 30.0
+# A rating sitting this far under the threshold is worth a push, not just the inbox.
+RATING_IMPORTANT_DROP = 0.5
+
+_BAND_RANK = {"slightly": 0, "notably": 1, "far": 2}
+_BAND_LABEL = {"slightly": "above", "notably": "well above", "far": "far above"}
+
+
+def _gap_band(gap_pct: float) -> str:
+    if gap_pct >= 50:
+        return "far"
+    if gap_pct >= 20:
+        return "notably"
+    return "slightly"
+
+
+def _oos_items(ev: _Evaluation, pins: set[str] | None = None) -> list[dict]:
+    return [
+        {"platform": platform, "pincode": pincode, "price": row.price}
+        for (platform, pincode), row in ev.seller_latest.items()
+        if row.in_stock is False and (pins is None or pincode in pins)
+    ]
 
 
 def _area_pins(ev: _Evaluation, rule: AlertRule | dict) -> set[str]:
@@ -307,152 +352,334 @@ def _area_pins(ev: _Evaluation, rule: AlertRule | dict) -> set[str]:
     return pins
 
 
-async def _price_change_candidates(
+def _gap_items(ev: _Evaluation, threshold: float) -> list[dict]:
+    items = []
+    for (platform, pincode), row in ev.seller_latest.items():
+        if row.price is None or row.status != "ok":
+            continue
+        rival_price = ev.cheapest_rival.get((platform, pincode))
+        if not rival_price or row.price - rival_price < MIN_PRICE_MOVE_RUPEES:
+            continue
+        gap = (row.price / rival_price - 1) * 100
+        if gap < threshold:
+            continue
+        items.append(
+            {
+                "platform": platform,
+                "pincode": pincode,
+                "price": row.price,
+                "rival_price": rival_price,
+                "gap_pct": round(gap, 2),
+            }
+        )
+    return items
+
+
+def _rating_items(ev: _Evaluation, threshold: float) -> list[dict]:
+    return [
+        {"platform": platform, "pincode": pincode, "rating": row.rating}
+        for (platform, pincode), row in ev.seller_latest.items()
+        if row.rating is not None and row.rating < threshold
+    ]
+
+
+def _rival_oos_items(ev: _Evaluation) -> list[dict]:
+    return [
+        {"competitor_id": competitor_id, "platform": platform, "pincode": pincode}
+        for (competitor_id, platform, pincode), row in ev.rival_latest.items()
+        if row.in_stock is False
+    ]
+
+
+async def _price_change_items(
     session: AsyncSession, ev: _Evaluation, threshold: float
 ) -> list[dict]:
-    product = ev.product
     events = (
         await session.scalars(
             select(ChangeEvent)
             .where(
-                ChangeEvent.product_id == product.id,
+                ChangeEvent.product_id == ev.product.id,
                 ChangeEvent.kind.in_(("price_rise", "price_drop")),
                 ChangeEvent.detected_at >= ev.now - timedelta(hours=24),
             )
             .order_by(ChangeEvent.detected_at.desc())
         )
     ).all()
-    candidates: list[dict] = []
+    items = []
     for event in events:
         if event.old_value in (None, 0) or event.new_value is None:
             continue
-        pct = abs(event.new_value - event.old_value) / event.old_value * 100
+        delta = abs(event.new_value - event.old_value)
+        if delta < MIN_PRICE_MOVE_RUPEES:
+            continue
+        pct = delta / event.old_value * 100
         if pct < threshold:
             continue
-        direction = "up" if event.new_value > event.old_value else "down"
-        candidates.append(
-            _candidate(
-                "price_change_pct",
-                f"{product.name} price is {direction} {pct:.1f}% on "
-                f"{event.platform}/{event.pincode} "
-                f"(₹{event.old_value:.2f} → ₹{event.new_value:.2f}).",
-                {
-                    "platform": event.platform,
-                    "pincode": event.pincode,
-                    "old_value": event.old_value,
-                    "new_value": event.new_value,
-                    "pct": round(pct, 2),
-                },
-                f"price_change:{product.id}:{event.id}",
-            )
+        items.append(
+            {
+                "event_id": event.id,
+                "platform": event.platform,
+                "pincode": event.pincode,
+                "old_value": event.old_value,
+                "new_value": event.new_value,
+                "pct": round(pct, 2),
+                "direction": "up" if event.new_value > event.old_value else "down",
+            }
         )
-    return candidates
+    return items
 
 
-def _rating_candidates(ev: _Evaluation, threshold: float) -> list[dict]:
-    product = ev.product
-    candidates: list[dict] = []
-    for (platform, pincode), row in ev.seller_latest.items():
-        if row.rating is None or row.rating >= threshold:
-            continue
-        candidates.append(
-            _candidate(
-                "rating_below",
-                f"{product.name} rating {row.rating:.1f} is below {threshold:.1f} "
-                f"in {ev.area(pincode)} ({pincode}) on {platform}.",
-                {
-                    "platform": platform,
-                    "pincode": pincode,
-                    "rating": row.rating,
-                    "threshold": threshold,
-                },
-                f"rating:{product.id}:{platform}:{pincode}:"
-                f"{round(float(row.rating), 2)}:{ev.day}",
-            )
+def _state_of(kind: str, items: list[dict]) -> dict:
+    """A JSON-safe snapshot of "how bad is it right now", compared against the
+    previous alert's state to tell enter / worse / unchanged / recovered apart."""
+    if kind in ("oos_any", "oos_area", "rival_oos"):
+        return {"pairs": sorted(f"{i['platform']}:{i['pincode']}" for i in items)}
+    if kind == "price_gap_pct":
+        return {
+            "max_gap_pct": round(max((i["gap_pct"] for i in items), default=0.0), 2),
+            "pairs": sorted(f"{i['platform']}:{i['pincode']}" for i in items),
+        }
+    if kind == "rating_below":
+        return {"min_rating": round(min((i["rating"] for i in items), default=5.0), 2)}
+    return {}
+
+
+def _is_worse(kind: str, old_state: dict, new_state: dict, threshold: float) -> bool:
+    if kind in ("oos_any", "oos_area", "rival_oos"):
+        return not set(new_state.get("pairs", [])) <= set(old_state.get("pairs", []))
+    if kind == "price_gap_pct":
+        old_gap = old_state.get("max_gap_pct", 0.0)
+        new_gap = new_state.get("max_gap_pct", 0.0)
+        if new_gap <= old_gap:
+            return False
+        if _gap_band(new_gap) != _gap_band(old_gap):
+            return True
+        return (new_gap - old_gap) >= threshold * WORSEN_FRACTION
+    if kind == "rating_below":
+        old_r, new_r = old_state.get("min_rating"), new_state.get("min_rating")
+        if old_r is None or new_r is None:
+            return True
+        return (old_r - new_r) >= RATING_DROP_STEP
+    return True
+
+
+def _severity_for(kind: str, ev: _Evaluation, items: list[dict], threshold: float) -> str:
+    if kind in ("oos_any", "oos_area"):
+        fraction = len(items) / max(1, len(ev.seller_latest))
+        return "urgent" if fraction >= OOS_URGENT_FRACTION else "important"
+    if kind == "price_gap_pct":
+        worst = max(i["gap_pct"] for i in items)
+        return "urgent" if worst >= GAP_URGENT_PCT else "important"
+    if kind == "rating_below":
+        worst_drop = threshold - min(i["rating"] for i in items)
+        return "important" if worst_drop >= RATING_IMPORTANT_DROP else "info"
+    if kind == "rival_oos":
+        return "info"
+    return "important"
+
+
+def _oos_message(ev: _Evaluation, items: list[dict], event: str) -> str:
+    by_platform: dict[str, list[str]] = {}
+    for i in items:
+        by_platform.setdefault(i["platform"], []).append(ev.area(i["pincode"]))
+    where = "; ".join(
+        f"{platform.capitalize()} ({', '.join(sorted(set(areas)))})"
+        for platform, areas in sorted(by_platform.items())
+    )
+    n = len(items)
+    lead = "Still worsening — " if event == "worsened" else ""
+    return f"{lead}{ev.product.name} is out of stock in {n} spot{'s' if n != 1 else ''}: {where}."
+
+
+def _gap_message(ev: _Evaluation, items: list[dict], event: str) -> str:
+    by_platform: dict[str, float] = {}
+    for i in items:
+        by_platform[i["platform"]] = max(by_platform.get(i["platform"], 0.0), i["gap_pct"])
+    parts = ", ".join(
+        f"{platform.capitalize()} {gap:.0f}%"
+        for platform, gap in sorted(by_platform.items(), key=lambda kv: -kv[1])
+    )
+    band = _gap_band(max(i["gap_pct"] for i in items))
+    lead = "Gap widened further — " if event == "worsened" else ""
+    return f"{lead}{ev.product.name} is {_BAND_LABEL[band]} the cheapest rival on {parts}."
+
+
+def _rating_message(ev: _Evaluation, items: list[dict], event: str, threshold: float) -> str:
+    worst = min(i["rating"] for i in items)
+    lead = "Rating dropped further — " if event == "worsened" else ""
+    return f"{lead}{ev.product.name} rating is {worst:.1f}, below your {threshold:.1f} bar."
+
+
+def _rival_oos_message(ev: _Evaluation, items: list[dict], event: str) -> str:
+    del event  # always a fresh "chance" the moment it opens; no "worsened" wording needed
+    n = len(items)
+    return (
+        f"A rival is out of stock for {ev.product.name} in {n} spot{'s' if n != 1 else ''} "
+        "— a chance to capture the shelf."
+    )
+
+
+_RECOVERED_LABEL = {
+    "oos_any": "is back in stock everywhere ✅",
+    "oos_area": "is back in stock in that area ✅",
+    "price_gap_pct": "price gap has closed ✅",
+    "rating_below": "rating has recovered ✅",
+    "rival_oos": "the rival is back in stock",
+}
+
+
+def _message_for(kind: str, ev: _Evaluation, items: list[dict], event: str, threshold: float) -> str:
+    if kind in ("oos_any", "oos_area"):
+        return _oos_message(ev, items, event)
+    if kind == "price_gap_pct":
+        return _gap_message(ev, items, event)
+    if kind == "rating_below":
+        return _rating_message(ev, items, event, threshold)
+    if kind == "rival_oos":
+        return _rival_oos_message(ev, items, event)
+    return f"{ev.product.name}: {len(items)} update(s)."
+
+
+async def _last_open_alert(
+    session: AsyncSession, product_id: str, kind: str, bucket: str | None
+) -> Alert | None:
+    """Most recent alert of this kind/bucket still describing an open problem
+
+    (i.e. the most recent one wasn't itself a "recovered" message); None if
+    there is no earlier alert, or the problem was last seen resolved.
+    """
+    rows = (
+        await session.scalars(
+            select(Alert)
+            .where(Alert.product_id == product_id, Alert.kind == kind)
+            .order_by(Alert.created_at.desc())
+            .limit(10)
         )
-    return candidates
+    ).all()
+    for row in rows:
+        if (row.evidence or {}).get("bucket") != bucket:
+            continue
+        return None if (row.evidence or {}).get("event") == "recovered" else row
+    return None
 
 
-def _gap_candidates(ev: _Evaluation, threshold: float) -> list[dict]:
-    product = ev.product
-    candidates: list[dict] = []
-    for (platform, pincode), row in ev.seller_latest.items():
-        if row.price is None or row.status != "ok":
-            continue
-        rival_price = ev.cheapest_rival.get((platform, pincode))
-        if not rival_price:
-            continue
-        gap = (row.price / rival_price - 1) * 100
-        if gap < threshold:
-            continue
-        candidates.append(
-            _candidate(
-                "price_gap_pct",
-                f"{product.name} on {platform} in {ev.area(pincode)} is priced "
-                f"{gap:.1f}% above the rival "
-                f"(₹{row.price:.2f} vs ₹{rival_price:.2f}).",
-                {
-                    "platform": platform,
-                    "pincode": pincode,
-                    "price": row.price,
-                    "rival_price": rival_price,
-                    "gap_pct": round(gap, 2),
-                },
-                f"price_gap:{product.id}:{platform}:{pincode}:"
-                f"{round(row.price, 2)}:{round(rival_price, 2)}:{ev.day}",
-            )
-        )
-    return candidates
+async def _combined_candidate(
+    session: AsyncSession,
+    ev: _Evaluation,
+    kind: str,
+    items: list[dict],
+    threshold: float,
+    run_id: str | None,
+    *,
+    bucket: str | None = None,
+) -> dict | None:
+    """One alert for this kind — on enter, on a meaningful worsening, or on
+    recovery — or None when the problem is unchanged (so nothing is sent)."""
+    last = await _last_open_alert(session, ev.product.id, kind, bucket)
+    old_state = (last.evidence or {}).get("state", {}) if last else {}
+    new_state = _state_of(kind, items)
+    if not items:
+        if last is None:
+            return None
+        dedupe_key = f"{kind}:{ev.product.id}:{bucket or ''}:recovered:{run_id or ev.now.isoformat()}"
+        evidence = {"event": "recovered", "state": {}, "bucket": bucket}
+        return _candidate(kind, f"{ev.product.name} {_RECOVERED_LABEL.get(kind, 'is back to normal')}", evidence, "info", dedupe_key)
+    if last is not None and not _is_worse(kind, old_state, new_state, threshold):
+        return None
+    event = "worsened" if last is not None else "enter"
+    rep = items[0]
+    if kind == "price_gap_pct":
+        rep = max(items, key=lambda i: i["gap_pct"])
+    elif kind == "rating_below":
+        rep = min(items, key=lambda i: i["rating"])
+    evidence = {
+        "event": event,
+        "state": new_state,
+        "items": items[:25],
+        "count": len(items),
+        "platform": rep.get("platform"),
+        "pincode": rep.get("pincode"),
+        "bucket": bucket,
+    }
+    if kind == "price_gap_pct":
+        evidence.update(gap_pct=rep["gap_pct"], price=rep["price"], rival_price=rep["rival_price"])
+    elif kind == "rating_below":
+        evidence.update(rating=rep["rating"], threshold=threshold)
+    message = _message_for(kind, ev, items, event, threshold)
+    severity = _severity_for(kind, ev, items, threshold)
+    dedupe_key = f"{kind}:{ev.product.id}:{bucket or ''}:{event}:{run_id or ev.now.isoformat()}"
+    return _candidate(kind, message, evidence, severity, dedupe_key)
 
 
-def _rival_oos_candidates(ev: _Evaluation) -> list[dict]:
-    product = ev.product
-    candidates: list[dict] = []
-    for (competitor_id, platform, pincode), row in ev.rival_latest.items():
-        if row.in_stock is not False:
-            continue
-        candidates.append(
-            _candidate(
-                "rival_oos",
-                f"A competitor is out of stock for {product.name} in "
-                f"{ev.area(pincode)} ({pincode}) on {platform} — chance to capture "
-                "the shelf.",
-                {"competitor_id": competitor_id, "platform": platform, "pincode": pincode},
-                f"rival_oos:{product.id}:{competitor_id}:{platform}:{pincode}:{ev.day}",
-            )
-        )
-    return candidates
+def _price_change_candidate(ev: _Evaluation, items: list[dict], run_id: str | None) -> dict | None:
+    """Price-change alerts are an event stream, not a persisting condition: one
+    combined alert per run for whatever qualifying moves happened, deduped by
+    the underlying change-event ids (so re-evaluating never repeats them)."""
+    if not items:
+        return None
+    up = [i for i in items if i["direction"] == "up"]
+    down = [i for i in items if i["direction"] == "down"]
+    parts = []
+    if up:
+        parts.append(f"up {max(i['pct'] for i in up):.0f}% on {len(up)} listing{'s' if len(up) != 1 else ''}")
+    if down:
+        parts.append(f"down {max(i['pct'] for i in down):.0f}% on {len(down)} listing{'s' if len(down) != 1 else ''}")
+    message = f"{ev.product.name} price moved: " + ", ".join(parts) + "."
+    worst_pct = max(i["pct"] for i in items)
+    severity = "urgent" if worst_pct >= PRICE_CHANGE_URGENT_PCT else "important"
+    evidence = {
+        "event": "moved",
+        "items": items[:25],
+        "count": len(items),
+        "pct": worst_pct,
+        "platform": items[0]["platform"],
+        "pincode": items[0]["pincode"],
+    }
+    dedupe_key = "price_change:" + ev.product.id + ":" + ",".join(sorted(str(i["event_id"]) for i in items))
+    return _candidate("price_change_pct", message, evidence, severity, dedupe_key)
 
 
 async def _rule_candidates(
-    session: AsyncSession, ev: _Evaluation, rule: AlertRule | dict
+    session: AsyncSession,
+    ev: _Evaluation,
+    rule: AlertRule | dict,
+    *,
+    run_id: str | None = None,
+    bucket: str | None = None,
 ) -> list[dict]:
     kind = KIND_ALIASES.get(_rule_field(rule, "kind"), _rule_field(rule, "kind"))
     rule_id = rule.id if isinstance(rule, AlertRule) else None
     if kind == "oos_any":
-        return list(_oos_candidates(ev, "oos_any", None, "oos"))
-    if kind == "oos_area":
-        return list(
-            _oos_candidates(ev, "oos_area", _area_pins(ev, rule), f"oos_area:{rule_id}")
+        candidate = await _combined_candidate(session, ev, "oos_any", _oos_items(ev), 0.0, run_id, bucket=bucket)
+    elif kind == "oos_area":
+        candidate = await _combined_candidate(
+            session, ev, "oos_area", _oos_items(ev, _area_pins(ev, rule)), 0.0, run_id, bucket=bucket or rule_id
         )
-    if kind == "price_change_pct":
+    elif kind == "price_change_pct":
         threshold = _rule_threshold(rule, ev.product.max_change_pct) or 0.0
-        return await _price_change_candidates(session, ev, threshold)
-    if kind == "rating_below":
-        return _rating_candidates(ev, _rule_threshold(rule, DEFAULT_RATING_THRESHOLD) or 0.0)
-    if kind == "price_gap_pct":
-        return _gap_candidates(
-            ev, _rule_threshold(rule, default_gap_threshold(ev.product)) or 0.0
-        )
-    if kind == "rival_oos":
-        return _rival_oos_candidates(ev)
-    if kind == "custom":
-        return await _custom_candidates(session, ev, rule, rule_id)
-    return []
+        candidate = _price_change_candidate(ev, await _price_change_items(session, ev, threshold), run_id)
+    elif kind == "rating_below":
+        threshold = _rule_threshold(rule, DEFAULT_RATING_THRESHOLD) or 0.0
+        candidate = await _combined_candidate(session, ev, "rating_below", _rating_items(ev, threshold), threshold, run_id, bucket=bucket)
+    elif kind == "price_gap_pct":
+        threshold = _rule_threshold(rule, default_gap_threshold(ev.product)) or 0.0
+        candidate = await _combined_candidate(session, ev, "price_gap_pct", _gap_items(ev, threshold), threshold, run_id, bucket=bucket)
+    elif kind == "rival_oos":
+        candidate = await _combined_candidate(session, ev, "rival_oos", _rival_oos_items(ev), 0.0, run_id, bucket=bucket)
+    elif kind == "custom":
+        return await _custom_candidates(session, ev, rule, rule_id, run_id=run_id)
+    else:
+        return []
+    return [candidate] if candidate else []
 
 
 async def _custom_candidates(
-    session: AsyncSession, ev: _Evaluation, rule: AlertRule | dict, rule_id: str | None
+    session: AsyncSession,
+    ev: _Evaluation,
+    rule: AlertRule | dict,
+    rule_id: str | None,
+    *,
+    run_id: str | None = None,
 ) -> list[dict]:
     text = (_rule_field(rule, "rule_text") or "").strip()
     if not text:
@@ -470,14 +697,27 @@ async def _custom_candidates(
         {
             **candidate,
             "kind": "custom",
-            "message": f"Custom rule “{quoted}”: {candidate['message']}"[
-                :ALERT_MESSAGE_LIMIT
-            ],
+            "message": f"Custom rule “{quoted}”: {candidate['message']}"[:ALERT_MESSAGE_LIMIT],
             "evidence": {**candidate["evidence"], "rule_text": text},
             "dedupe_key": f"custom:{rule_id}:{candidate['dedupe_key']}"[:500],
         }
-        for candidate in await _rule_candidates(session, ev, derived)
+        # Rides the same enter/worsen/recover engine as its derived kind, bucketed
+        # by this rule's own id so it never shares state with a default rule of
+        # the same kind (e.g. a custom "oos in South Delhi" rule vs. oos_any).
+        for candidate in await _rule_candidates(session, ev, derived, run_id=run_id, bucket=rule_id)
     ]
+
+
+MUTE_HOURS = 24
+
+
+def mute_until(now: datetime | None = None) -> datetime:
+    return (now or utcnow()) + timedelta(hours=MUTE_HOURS)
+
+
+def product_muted(product: Product, now: datetime | None = None) -> bool:
+    until = product.alert_muted_until
+    return until is not None and until > (now or utcnow())
 
 
 async def evaluate_alerts(
@@ -513,7 +753,7 @@ async def evaluate_alerts(
     candidates: list[dict] = []
     for rule in rules:
         if _rule_field(rule, "kind") in ALERT_KINDS:
-            candidates.extend(await _rule_candidates(session, ev, rule))
+            candidates.extend(await _rule_candidates(session, ev, rule, run_id=run_id))
     if not candidates:
         return []
     keys = {candidate["dedupe_key"] for candidate in candidates}
@@ -537,6 +777,7 @@ async def evaluate_alerts(
             kind=candidate["kind"],
             message=candidate["message"],
             evidence=candidate["evidence"],
+            severity=candidate.get("severity", "important"),
             dedupe_key=key,
         )
         session.add(alert)
@@ -587,12 +828,19 @@ async def deliver_alerts(
     up later. A chat only receives alerts raised after it was linked.
     Delivery is a no-op when the bot is not running.
     """
+    from ..models.product import Product
     from .telegram_features import alert_photo, send_alert  # local import avoids cycles
 
     if not alerts:
         return 0
     delivered = 0
     product_ids = {alert.product_id for alert in alerts}
+    products = {
+        row.id: row
+        for row in (
+            await session.scalars(select(Product).where(Product.id.in_(product_ids)))
+        ).all()
+    }
     links = list(
         (
             await session.scalars(
@@ -622,6 +870,9 @@ async def deliver_alerts(
         ).all()
     }
     for alert in alerts:
+        product = products.get(alert.product_id)
+        if product is not None and product_muted(product):
+            continue
         photo = await alert_photo(session, alert)
         for link in links_by_product.get(alert.product_id, []):
             if not link_wants(link, alert.kind):
@@ -640,12 +891,117 @@ async def deliver_alerts(
                 local_now = datetime.now(UTC)
             if _within_quiet_hours(user_settings, local_now):
                 continue
-            sent = await send_alert(link.chat_id, f"[ShelfSense] {alert.message}", photo)
+            sent = await send_alert(
+                link.chat_id, f"[ShelfSense] {alert.message}", photo, product_id=alert.product_id
+            )
             if sent:
                 alert.sent_telegram = True
                 delivered += 1
     await session.commit()
     return delivered
+
+
+def instant_alerts(alerts: list[Alert], alert_level: str) -> list[Alert]:
+    """Which of these newly-created alerts should push to Telegram right now.
+
+    "urgent" always pushes instantly (nothing time-critical waits). "important"
+    pushes instantly only on the "everything" level; otherwise it waits for the
+    periodic digest (``deliver_important_digests``) — "calm" never pushes it at
+    all. "info" never pushes; it is inbox + morning-briefing only. Every alert
+    is kept in the inbox regardless, so no information is ever lost, only its
+    delivery speed changes.
+    """
+    if alert_level == "calm":
+        return [a for a in alerts if a.severity == "urgent"]
+    if alert_level == "everything":
+        return [a for a in alerts if a.severity in ("urgent", "important")]
+    return [a for a in alerts if a.severity == "urgent"]
+
+
+async def deliver_important_digests(now: datetime | None = None) -> int:
+    """Batch "important" alerts (level=balanced) into one message per product,
+    every ``DIGEST_INTERVAL_HOURS`` — instead of one push per check run."""
+    now = now if now is not None else utcnow()
+    async with SessionLocal() as session:
+        pending = list(
+            (
+                await session.scalars(
+                    select(Alert).where(
+                        Alert.severity == "important",
+                        Alert.sent_telegram.is_(False),
+                        Alert.created_at >= now - DEFERRED_ALERT_WINDOW,
+                    )
+                )
+            ).all()
+        )
+        if not pending:
+            return 0
+        from ..models.product import Product
+
+        product_ids = {a.product_id for a in pending}
+        user_ids = {a.user_id for a in pending}
+        settings_rows = {
+            row.user_id: row
+            for row in (
+                await session.scalars(
+                    select(UserSettings).where(UserSettings.user_id.in_(user_ids))
+                )
+            ).all()
+        }
+        products = {
+            row.id: row
+            for row in (
+                await session.scalars(select(Product).where(Product.id.in_(product_ids)))
+            ).all()
+        }
+        by_product: dict[str, list[Alert]] = {}
+        for alert in pending:
+            level = (settings_rows.get(alert.user_id).alert_level if settings_rows.get(alert.user_id) else "balanced")
+            if level != "balanced":
+                continue  # "everything" already went instantly; "calm" never pushes "important"
+            product = products.get(alert.product_id)
+            if product is not None and product_muted(product, now):
+                continue
+            by_product.setdefault(alert.product_id, []).append(alert)
+        if not by_product:
+            return 0
+        delivered = 0
+        for product_id, items in by_product.items():
+            product = products.get(product_id)
+            name = product.name if product else "your product"
+            lines = [f"[ShelfSense] {name} — {len(items)} update{'s' if len(items) != 1 else ''} since last digest:"]
+            lines.extend(f"• {a.message}" for a in items[:10])
+            sent = await deliver_digest_message(session, product_id, "\n".join(lines))
+            if sent:
+                for a in items:
+                    a.sent_telegram = True
+                delivered += sent
+        await session.commit()
+        return delivered
+
+
+async def deliver_digest_message(session: AsyncSession, product_id: str, text: str) -> int:
+    """Send one already-built digest message to every linked, opted-in chat."""
+    from .telegram_features import send_alert
+
+    links = list(
+        (
+            await session.scalars(
+                select(TelegramLink).where(TelegramLink.product_id == product_id)
+            )
+        ).all()
+    )
+    sent = 0
+    for link in links:
+        user = await session.get(User, link.user_id)
+        if user is None:
+            continue
+        user_settings = await session.get(UserSettings, user.id)
+        if not telegram_allowed(user_settings):
+            continue
+        if await send_alert(link.chat_id, text, None, product_id=product_id):
+            sent += 1
+    return sent
 
 
 async def deliver_deferred_alerts(now: datetime | None = None) -> int:

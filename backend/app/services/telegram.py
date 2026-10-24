@@ -665,7 +665,11 @@ async def _handle_check(update, context) -> None:
 
 
 async def _handle_callback(update, context) -> None:
-    from .telegram_features import handle_check_callback, handle_product_callback
+    from .telegram_features import (
+        handle_check_callback,
+        handle_mute_callback,
+        handle_product_callback,
+    )
 
     query = update.callback_query
     data = (query.data or "") if query is not None else ""
@@ -686,6 +690,8 @@ async def _handle_callback(update, context) -> None:
     if await handle_product_callback(update, context):
         return
     if await handle_check_callback(update, context):
+        return
+    if await handle_mute_callback(update, context):
         return
     await handle_approve_callback(update, context)
 

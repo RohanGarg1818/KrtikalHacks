@@ -83,6 +83,8 @@ class Alert(UUIDPrimaryKeyMixin, Base):
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     dedupe_key: Mapped[str] = mapped_column(String(500), unique=True)
     sent_telegram: Mapped[bool] = mapped_column(default=False)
+    # urgent (instant Telegram push) | important (3h digest) | info (inbox/briefing only)
+    severity: Mapped[str] = mapped_column(String(16), default="important")
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow
     )

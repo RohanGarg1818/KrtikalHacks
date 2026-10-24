@@ -362,12 +362,15 @@ export interface LinkCode {
   product_id: string;
 }
 
+export type AlertLevel = "calm" | "balanced" | "everything";
+
 export interface UserSettings {
   briefing_time: string;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   default_thresholds: Record<string, unknown>;
   channels: Record<string, unknown>;
+  alert_level: AlertLevel;
 }
 
 export interface ChatMessage {

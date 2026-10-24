@@ -744,15 +744,52 @@ async def alert_photo(session: AsyncSession, alert: Alert) -> Path | None:
     return _photo_path(url)
 
 
-async def send_alert(chat_id: str, text: str, photo: Path | None) -> bool:
-    """Alert with its screenshot attached when one exists; text-only otherwise."""
+def _mute_keyboard(product_id: str | None):
+    if not product_id:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔕 Mute this product 24h", callback_data=f"mute:{product_id}")]])
+
+
+async def send_alert(chat_id: str, text: str, photo: Path | None, *, product_id: str | None = None) -> bool:
+    """Alert with its screenshot attached when one exists; text-only otherwise.
+
+    Carries a "Mute 24h" button when ``product_id`` is given, so a seller
+    swamped by one noisy product can silence it in one tap without opening the app.
+    """
     from .telegram import get_bot_application, send_telegram_message
 
     application = get_bot_application()
+    keyboard = _mute_keyboard(product_id)
     if photo is not None and application is not None:
         try:
-            await application.bot.send_photo(chat_id=chat_id, photo=photo.read_bytes(), caption=text[:1000])
+            await application.bot.send_photo(
+                chat_id=chat_id, photo=photo.read_bytes(), caption=text[:1000], reply_markup=keyboard
+            )
             return True
         except Exception:
             logger.warning("alert photo failed chat=%s; sending text", chat_id, exc_info=True)
-    return await send_telegram_message(chat_id, text)
+    return await send_telegram_message(chat_id, text, reply_markup=keyboard)
+
+
+async def handle_mute_callback(update, context) -> bool:
+    """Process ``mute:<product_id>`` from the alert's "Mute 24h" button."""
+    del context
+    from .alerts import mute_until
+
+    query = update.callback_query
+    if query is None or not query.data or not query.data.startswith("mute:"):
+        return False
+    product_id = query.data.split(":", 1)[1]
+    async with SessionLocal() as session:
+        product = await session.get(Product, product_id)
+        if product is None:
+            await query.answer("Product no longer exists.")
+            return True
+        product.alert_muted_until = mute_until()
+        await session.commit()
+        await query.answer("Muted for 24h — you can unmute anytime in Settings.")
+        with contextlib.suppress(Exception):
+            await query.edit_message_reply_markup(reply_markup=None)
+    return True

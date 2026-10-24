@@ -20,7 +20,8 @@ import { clamp, foreignModal, obstacles, overlap, topInset, usable, usePrefs, wa
 export type TourExit = "done" | "skip" | "pause" | "detour";
 
 export interface TourProps {
-  kind: "tour" | "pagetour";
+  /** "recap": the "while you were away" walk-through — navigates like the tour, counts like a page tour. */
+  kind: "tour" | "pagetour" | "recap";
   steps: TourStep[];
   startIndex: number;
   initialCtx: TourCtx;
@@ -235,7 +236,7 @@ export default function Tour({ kind, steps, startIndex, initialCtx, reduced, mob
       go(index + dir.current, dir.current);
       return;
     }
-    if (kind === "tour" && !step.route.test(pathname)) {
+    if (kind !== "pagetour" && !step.route.test(pathname)) {
       const href = typeof step.href === "function" ? step.href(live.current.ctx) : step.href;
       if (!href) {
         skipChapter(index);

@@ -5,6 +5,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .common import ClockTime, FiniteFloat, PatchModel
 
 ChannelName = Literal["telegram", "email"]
+# calm: urgent Telegram pushes only. balanced (default): + important via a 3h digest.
+# everything: + important instantly too. "info" alerts always stay inbox/briefing-only.
+AlertLevel = Literal["calm", "balanced", "everything"]
 
 
 class UserSettingsResponse(BaseModel):
@@ -14,6 +17,7 @@ class UserSettingsResponse(BaseModel):
     quiet_hours_end: str | None
     default_thresholds: dict
     channels: dict
+    alert_level: AlertLevel
 
 
 class UserSettingsUpdate(PatchModel):
@@ -28,6 +32,7 @@ class UserSettingsUpdate(PatchModel):
         default=None, max_length=20
     )
     channels: dict[ChannelName, bool] | None = None
+    alert_level: AlertLevel | None = None
 
     @model_validator(mode="after")
     def quiet_hours_are_a_pair(self) -> "UserSettingsUpdate":

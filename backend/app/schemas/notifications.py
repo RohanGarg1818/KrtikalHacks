@@ -20,6 +20,9 @@ class AlertResponse(BaseModel):
     kind: str
     message: str
     evidence: dict = Field(default_factory=dict)
+    # urgent (pushed instantly) | important (pushed instantly or digested,
+    # depending on the seller's alert level) | info (inbox/briefing only).
+    severity: str = "important"
     read: bool
     sent_telegram: bool
     created_at: datetime
@@ -28,6 +31,11 @@ class AlertResponse(BaseModel):
 class AlertListResponse(BaseModel):
     items: list[AlertResponse]
     unread: int = 0
+
+
+class MuteResponse(BaseModel):
+    product_id: str
+    muted_until: datetime | None
 
 
 class MarkReadResponse(BaseModel):

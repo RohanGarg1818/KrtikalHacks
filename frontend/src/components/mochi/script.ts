@@ -331,6 +331,7 @@ export const MENU = {
   resume: (n: number, t: number) => `Resume tour (${n}/${t})`,
   replay: "Replay the tour",
   page: "What's on this page?",
+  recap: "What happened while I was away?",
   ask: "Ask Mochi",
   quiet: (on: boolean) => `Quiet mode: ${on ? "On" : "Off"}`,
   move: (side: "left" | "right") => `Move to ${side === "right" ? "left" : "right"} side`,

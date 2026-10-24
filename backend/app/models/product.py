@@ -36,6 +36,8 @@ class Product(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow
     )
+    # "Mute 24h": alerts still land in the inbox, but Telegram delivery is skipped until this passes.
+    alert_muted_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class ProductListing(UUIDPrimaryKeyMixin, Base):

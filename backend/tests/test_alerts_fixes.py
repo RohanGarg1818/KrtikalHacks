@@ -171,7 +171,7 @@ async def test_deliver_alerts_respects_nothing_and_area_kinds(
 ) -> None:
     sent: list[str] = []
 
-    async def fake_send(chat_id: str, text: str, photo=None) -> bool:
+    async def fake_send(chat_id: str, text: str, photo=None, **_kwargs) -> bool:
         sent.append(chat_id)
         return True
 

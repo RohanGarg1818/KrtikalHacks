@@ -65,7 +65,7 @@ export default function RecommendationCard({
   const safeFloor = typeof evidence.safe_floor === "number" ? evidence.safe_floor : null;
   const chip = status === "dismissed" ? "Dismissed" : status === "done" ? "✓ Started" : "✓ Approved";
   return (
-    <div className={`card p-[26px] flex flex-col gap-5 transition-opacity ${decided ? "bg-linen border-dashed shadow-none" : ""}`}>
+    <div data-mochi-rec={rec.id} className={`card p-[26px] flex flex-col gap-5 transition-opacity ${decided ? "bg-linen border-dashed shadow-none" : ""}`}>
       <div className="flex flex-col gap-2 min-w-0">
         <div className="flex items-center gap-3 flex-wrap">
           <PriorityBadge priority={rec.priority} />

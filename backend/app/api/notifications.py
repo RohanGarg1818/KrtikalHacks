@@ -19,13 +19,19 @@ from ..schemas.notifications import (
     LinkCodeRequest,
     LinkCodeResponse,
     MarkReadResponse,
+    MuteResponse,
     TelegramChatLink,
     TelegramLinkUpdate,
     TelegramStatusResponse,
     TelegramTestResponse,
 )
 from ..schemas.products import AlertRuleOut
-from ..services.alerts import stored_rules, telegram_types_in, telegram_types_out
+from ..services.alerts import (
+    mute_until,
+    stored_rules,
+    telegram_types_in,
+    telegram_types_out,
+)
 from ..services.telegram import (
     bot_is_running,
     build_deeplink,
@@ -56,6 +62,7 @@ def _alert_payload(row: Alert, product_names: dict[str, str]) -> AlertResponse:
         kind=row.kind,
         message=row.message,
         evidence=row.evidence or {},
+        severity=row.severity,
         read=row.read,
         sent_telegram=row.sent_telegram,
         created_at=row.created_at,
@@ -133,6 +140,32 @@ async def mark_all_alerts_read(
     )
     await session.commit()
     return MarkReadResponse(marked=int(result.rowcount or 0))
+
+
+@router.post("/products/{product_id}/alerts/mute", response_model=MuteResponse)
+async def mute_product_alerts(
+    product_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> MuteResponse:
+    """Silence Telegram pushes for this product for 24h (the "🔕 Mute 24h" action);
+    alerts keep landing in the inbox, only the push is held back."""
+    product = await get_owned_product(session, user.id, product_id)
+    product.alert_muted_until = mute_until()
+    await session.commit()
+    return MuteResponse(product_id=product.id, muted_until=product.alert_muted_until)
+
+
+@router.delete("/products/{product_id}/alerts/mute", response_model=MuteResponse)
+async def unmute_product_alerts(
+    product_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> MuteResponse:
+    product = await get_owned_product(session, user.id, product_id)
+    product.alert_muted_until = None
+    await session.commit()
+    return MuteResponse(product_id=product.id, muted_until=None)
 
 
 @router.get(

@@ -463,7 +463,7 @@ async def test_deliver_alerts_respects_links_and_quiet_hours(
     product = await get_product(product_id)
     sent: list[tuple[str, str]] = []
 
-    async def fake_send(chat_id: str, text: str) -> bool:
+    async def fake_send(chat_id: str, text: str, **_kwargs) -> bool:
         sent.append((chat_id, text))
         return True
 

@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .api.catalog import router as catalog_router
+from .api.catchup import router as catchup_router
 from .api.chat import router as chat_router
 from .api.competitors import router as competitors_router
 from .api.dashboard import router as dashboard_router
@@ -255,6 +256,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(me_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")
+    app.include_router(catchup_router, prefix="/api")
     app.include_router(catalog_router, prefix="/api")
     app.include_router(products_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")

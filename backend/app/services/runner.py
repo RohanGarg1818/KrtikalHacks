@@ -29,7 +29,8 @@ from ..models.base import utcnow
 from ..models.checks import CheckResult as CheckResultRow
 from ..models.checks import CheckRun, CreditLedger
 from ..models.product import Competitor, Pincode, Product, ProductListing
-from .alerts import deliver_alerts, evaluate_alerts
+from ..models.user import UserSettings
+from .alerts import deliver_alerts, evaluate_alerts, instant_alerts
 from .events import run_events
 from .insights import detect_changes
 from .intelligence import refresh_intelligence
@@ -747,7 +748,13 @@ async def _post_run_hooks(session: AsyncSession, run_id: str, product_id: str) -
         if product is not None:
             alerts = await evaluate_alerts(session, product, run_id=run_id)
             if alerts:
-                await deliver_alerts(session, alerts)
+                user_settings = await session.get(UserSettings, product.user_id)
+                level = user_settings.alert_level if user_settings else "balanced"
+                # "important" alerts wait for the periodic digest unless the seller
+                # chose "everything"; every alert is in the inbox either way.
+                now_alerts = instant_alerts(alerts, level)
+                if now_alerts:
+                    await deliver_alerts(session, now_alerts)
     except Exception:
         logger.exception("alert evaluation failed for run %s", run_id)
         await session.rollback()

@@ -7,7 +7,7 @@ import { api, ApiError, downloadFile, errorMessage, useApi } from "@/lib/api";
 import { AUTH_ENABLED, getSupabase, signOut } from "@/lib/auth";
 import { setDisplayTimeZone } from "@/lib/format";
 import { toast } from "@/lib/toast";
-import type { Health, Me, Pincode, PlanChange, PlanLimits, Plans, ProductCard, UserSettings } from "@/lib/types";
+import type { AlertLevel, Health, Me, Pincode, PlanChange, PlanLimits, Plans, ProductCard, UserSettings } from "@/lib/types";
 import { CardSkeleton, ErrorCard, Modal, useConfirm } from "@/components/ui";
 
 const ASSET = "/figma/settings";
@@ -95,9 +95,16 @@ type Draft = {
   quiet_hours_start: string;
   quiet_hours_end: string;
   telegram: boolean;
+  alert_level: AlertLevel;
 };
 const PROFILE_KEYS = ["name", "business_name", "business_type", "timezone", "default_city"] as const;
-const SETTINGS_KEYS = ["briefing_time", "quiet_hours_start", "quiet_hours_end", "telegram"] as const;
+const SETTINGS_KEYS = ["briefing_time", "quiet_hours_start", "quiet_hours_end", "telegram", "alert_level"] as const;
+
+const ALERT_LEVEL_OPTIONS: readonly [AlertLevel, string][] = [
+  ["calm", "Calm — only urgent pushes"],
+  ["balanced", "Balanced — + important, batched every few hours"],
+  ["everything", "Everything — push every alert instantly"],
+];
 
 function toDraft(me: Me, s: UserSettings): Draft {
   const ch = (s.channels ?? {}) as Record<string, unknown>;
@@ -112,6 +119,7 @@ function toDraft(me: Me, s: UserSettings): Draft {
     quiet_hours_end: s.quiet_hours_end ?? "",
     // Alert delivery treats a missing flag as on (services/alerts.py), so the switch does too.
     telegram: ch.telegram !== false,
+    alert_level: s.alert_level ?? "balanced",
   };
 }
 
@@ -410,6 +418,7 @@ export default function SettingsPage() {
               quiet_hours_end: draft.quiet_hours_end || null,
               // Other channel flags (e.g. a legacy `email`) are kept as they are.
               channels: { ...((settings.data?.channels ?? {}) as Record<string, unknown>), telegram: draft.telegram },
+              alert_level: draft.alert_level,
             },
           }),
         );
@@ -739,8 +748,17 @@ export default function SettingsPage() {
                 options={quietOpts.map(([s, e]) => [`${s}|${e}`, quietLabel(s, e)] as const)}
               />
             </Row>
-            <Row label="Telegram alerts" last>
+            <Row label="Telegram alerts">
               <Switch label="Telegram alerts" checked={draft.telegram} onChange={(v) => set("telegram", v)} />
+            </Row>
+            <Row label="Alert level" last>
+              <Select
+                ariaLabel="Alert level"
+                className="w-[320px]"
+                value={draft.alert_level}
+                onChange={(v) => set("alert_level", v as AlertLevel)}
+                options={ALERT_LEVEL_OPTIONS}
+              />
             </Row>
             <p className="pt-2 text-[14px] leading-5 text-ink/80">
               Turning Telegram alerts off pauses alert messages to every linked chat. Alerts still appear in the bell and on the{" "}

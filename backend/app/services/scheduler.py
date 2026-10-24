@@ -25,7 +25,7 @@ from ..models.intelligence import AISummary, Alert
 from ..models.product import Product, ProductPincode
 from ..models.telegram import TelegramLink
 from ..models.user import Subscription, User, UserSettings
-from .alerts import link_wants, telegram_allowed
+from .alerts import deliver_important_digests, link_wants, telegram_allowed
 from .plans import (
     FREQUENCY_HOURS,
     limits_for,
@@ -36,6 +36,7 @@ logger = logging.getLogger("shelfsense.scheduler")
 
 SCAN_INTERVAL_SECONDS = 900
 BRIEFING_INTERVAL_SECONDS = 60
+DIGEST_INTERVAL_SECONDS = 3 * 3600
 FIRST_SCAN_DELAY_SECONDS = 20
 BRIEFING_HISTORY_LIMIT = 1000
 # "Check more often when prices are volatile": a price move at least this big
@@ -351,6 +352,11 @@ async def _briefing_job() -> None:
         await send_briefings()
 
 
+async def _digest_job() -> None:
+    with contextlib.suppress(Exception):
+        await deliver_important_digests()
+
+
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
@@ -369,6 +375,13 @@ def start_scheduler() -> None:
         "interval",
         seconds=BRIEFING_INTERVAL_SECONDS,
         id="send_briefings",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _digest_job,
+        "interval",
+        seconds=DIGEST_INTERVAL_SECONDS,
+        id="deliver_important_digests",
         replace_existing=True,
     )
     scheduler.start()

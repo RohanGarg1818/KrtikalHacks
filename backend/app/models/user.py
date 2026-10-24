@@ -46,3 +46,5 @@ class UserSettings(Base):
     channels: Mapped[dict] = mapped_column(
         JSON, default=lambda: {"telegram": True, "email": False}
     )
+    # calm (urgent only) | balanced (+ important via digest, default) | everything (+ important instantly)
+    alert_level: Mapped[str] = mapped_column(String(16), default="balanced")

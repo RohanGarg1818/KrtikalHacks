@@ -8,6 +8,7 @@ import Companion from "./Companion";
 import type { Expression } from "./expressions";
 import Intro, { type IntroResult } from "./Intro";
 import { MOCHI_TIPS, type MochiCtx } from "./messages";
+import { AWAY_MS, awayFor, fetchCatchUp, readLastSeen, recapSteps, writeLastSeen } from "./recap";
 import { INTRO_OUTRO, MENU, routeKey, TOUR, TOUR_APP_START, TOUR_LINES, type Chapter, type TourCtx, type TourStep } from "./script";
 import { foreignModal, getPrefs, MOBILE_QUERY, REDUCED_QUERY, sessionSet, SESSION_KEY, setPrefs, useMedia, usePrefs } from "./store";
 import Tour, { type TourExit } from "./Tour";
@@ -21,8 +22,8 @@ import type { SayInput } from "./useMochiEvents";
  * Every positioning-critical style is inline; ./mochi.css is cosmetic only.
  */
 
-type Mode = "boot" | "intro" | "tour" | "pagetour" | "companion";
-type Run = { kind: "tour" | "pagetour"; steps: TourStep[]; start: number; ctx: TourCtx; key: number; skipped?: Chapter[] };
+type Mode = "boot" | "intro" | "tour" | "pagetour" | "recap" | "companion";
+type Run = { kind: "tour" | "pagetour" | "recap"; steps: TourStep[]; start: number; ctx: TourCtx; key: number; skipped?: Chapter[] };
 type Entry = (SayInput & { mood?: Expression }) | null;
 
 const noopSubscribe = () => () => {};
@@ -142,6 +143,62 @@ function MochiRoot() {
     setMode("pagetour");
   }, [pathname, cache, mobile]);
 
+  /* --------------------------------------------------------------- recap */
+  // When the seller was last here, read once before this visit starts overwriting it.
+  const [awaySince] = useState<number | null>(() => readLastSeen());
+  // The companion reads `entry` on mount only: remount it to say a recap line while docked.
+  const [companionKey, setCompanionKey] = useState(0);
+  const sayNow = useCallback((e: Entry) => {
+    setEntry(e);
+    setCompanionKey((k) => k + 1);
+  }, []);
+  useEffect(() => {
+    const stamp = () => document.visibilityState === "visible" && writeLastSeen();
+    const onHide = () => writeLastSeen();
+    stamp();
+    const t = window.setInterval(stamp, 60_000);
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onHide);
+    };
+  }, []);
+
+  const startRecap = useCallback(async () => {
+    const away = awaySince && Date.now() - awaySince > 60_000 ? awaySince : null;
+    sayNow({ text: "Let me check what happened…", priority: 6, auto: true, mood: "thinking" });
+    try {
+      const data = await fetchCatchUp(away);
+      const steps = recapSteps(data, away ? awayFor(Date.now() - away) : null, getPrefs().name);
+      setEntry(null);
+      setRun({ kind: "recap", steps, start: 0, ctx: { productId: null, name: getPrefs().name, mobile: window.matchMedia(MOBILE_QUERY).matches }, key: Date.now() });
+      setMode("recap");
+    } catch {
+      sayNow({ text: "I couldn't reach the server for your recap. Try again in a moment?", priority: 6, auto: false, mood: "worried" });
+    }
+  }, [awaySince, sayNow]);
+
+  // Back after a while: offer the recap once, as soon as Mochi is docked and idle.
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (offered || mode !== "companion" || onLogin || pathname === "/" || prefs.intro !== "done") return;
+    if (!awaySince || Date.now() - awaySince < AWAY_MS) return;
+    setOffered(true);
+    sayNow({
+      text: `Welcome back! You were away ${awayFor(Date.now() - awaySince)}. Want a quick recap of what changed?`,
+      priority: 6,
+      auto: false,
+      mood: "excited",
+      hop: true,
+      actions: [
+        { label: "Show me", primary: true, run: () => void startRecap() },
+        { label: "Later", run: () => undefined },
+      ],
+    });
+  }, [offered, mode, onLogin, pathname, prefs.intro, awaySince, startRecap, sayNow]);
+
   const onProgress = useCallback((stepId: string, ctx: TourCtx) => {
     setPrefs({ tour: { status: "active", stepId, productId: ctx.productId } });
   }, []);
@@ -219,7 +276,7 @@ function MochiRoot() {
   /* -------------------------------------------------------------- render */
   if (mode === "intro") return <Intro reduced={reduced} mobile={mobile} voice={prefs.voice} onDone={onIntroDone} />;
 
-  if ((mode === "tour" || mode === "pagetour") && run)
+  if ((mode === "tour" || mode === "pagetour" || mode === "recap") && run)
     return (
       <Tour
         key={run.key}
@@ -243,6 +300,7 @@ function MochiRoot() {
 
   return (
     <Companion
+      key={companionKey}
       prefs={prefs}
       pathname={pathname}
       mobile={mobile}
@@ -254,6 +312,7 @@ function MochiRoot() {
       tour={{ label: tourLabel, resume: resumable ? { n: tourIndex + 1, total: TOUR.length } : null }}
       onStartTour={() => startTour(prefs.tour.status === "done")}
       onPageTour={startPageTour}
+      onRecap={() => void startRecap()}
       onLaterTour={() => undefined}
       onShow={() => {
         if (onLogin) setLoginOpen(true);

@@ -67,6 +67,8 @@ export interface CompanionProps {
   tour: { label: string; resume: { n: number; total: number } | null };
   onStartTour: () => void;
   onPageTour: () => void;
+  /** "What happened while I was away?" walk-through. */
+  onRecap: () => void;
   onLaterTour: () => void;
   onShow: () => void;
   onReplayIntro: () => void;
@@ -456,6 +458,7 @@ export default function Companion(p: CompanionProps) {
   }, [menu, chat]);
 
   const items: { id: string; label: string; run: () => void; footer?: boolean }[] = [
+    { id: "recap", label: MENU.recap, run: () => (setMenu(false), p.onRecap()) },
     { id: "tour", label: p.tour.label, run: () => (setMenu(false), p.onStartTour()) },
     ...(p.hasTips ? [{ id: "page", label: MENU.page, run: () => (setMenu(false), p.onPageTour()) }] : []),
     { id: "ask", label: MENU.ask, run: () => openChat() },
