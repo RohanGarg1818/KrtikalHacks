@@ -63,7 +63,7 @@ export default function ProductHeader({
 
 export function RecheckButton({ onClick, running, label, disabled }: { onClick: () => void; running?: boolean; label?: string; disabled?: boolean }) {
   return (
-    <button className="btn btn-primary h-12 px-[26px] text-[15px]" onClick={onClick} disabled={running || disabled}>
+    <button data-mochi="recheck" className="btn btn-primary h-12 px-[26px] text-[15px]" onClick={onClick} disabled={running || disabled}>
       <img src="/figma/shell/refresh.svg" alt="" width={13} height={13} className={running ? "animate-spin" : ""} />
       {label ?? (running ? "Checking…" : "Re-check now")}
     </button>

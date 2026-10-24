@@ -55,7 +55,7 @@ export default function AlertsPage() {
   const unread = data?.unread ?? 0;
   return (
     <div className="flex flex-col gap-8">
-      <section className="flex flex-wrap items-end justify-between gap-x-6 gap-y-5">
+      <section data-mochi="alerts-head" className="flex flex-wrap items-end justify-between gap-x-6 gap-y-5">
         <div className="flex flex-col gap-2">
           <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] tracking-[-1.4px]">Alerts</h1>
           <p className="text-[16px] leading-[22px]">
@@ -102,7 +102,7 @@ export default function AlertsPage() {
           )}
         </Empty>
       ) : (
-        <ul className="card divide-y-2 divide-ink/10 p-0 overflow-hidden">
+        <ul data-mochi="alerts-inbox" className="card divide-y-2 divide-ink/10 p-0 overflow-hidden">
           {data.items.map((a) => (
             <li key={a.id} className={`flex flex-wrap items-start gap-4 px-5 py-4 sm:px-6 ${a.read ? "" : "bg-sand/25"}`}>
               <span

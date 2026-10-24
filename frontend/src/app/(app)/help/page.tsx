@@ -212,7 +212,7 @@ export default function HelpPage() {
   return (
     <div className="flex flex-col gap-10 w-full max-w-[1100px]">
       {/* Page header */}
-      <section className="flex flex-col gap-6">
+      <section data-mochi="help-ask" className="flex flex-col gap-6">
         <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] font-semibold text-ink">
           How can we help{firstName ? `, ${firstName}` : ""}?
         </h1>
@@ -240,7 +240,7 @@ export default function HelpPage() {
       {/* Main layout: 4 / 8 columns */}
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:items-start">
         {/* Suggested questions */}
-        <section className="flex flex-col gap-4 lg:col-span-4 lg:row-start-1">
+        <section data-mochi="help-suggested" className="flex flex-col gap-4 lg:col-span-4 lg:row-start-1">
           <h2 className="text-[28px] md:text-[32px] leading-8 font-semibold">Suggested questions</h2>
           <Reveal stagger className="flex flex-col gap-3">
             {SUGGESTED.map((q) => (
@@ -258,7 +258,7 @@ export default function HelpPage() {
         </section>
 
         {/* Chat panel */}
-        <section ref={chatCard} className="flex flex-col gap-3 scroll-mt-6 lg:col-start-5 lg:col-span-8 lg:row-start-1 lg:row-span-3">
+        <section ref={chatCard} data-mochi="help-chat" className="flex flex-col gap-3 scroll-mt-6 lg:col-start-5 lg:col-span-8 lg:row-start-1 lg:row-span-3">
           <div className="flex flex-col h-[600px] lg:h-[640px] overflow-hidden rounded-[20px] border-2 border-ink bg-linen shadow-[6px_6px_0_var(--ink)]">
             {/* Context bar */}
             <div className="flex items-center justify-between gap-3 min-h-16 px-4 sm:px-6 py-3 border-b border-ink">
@@ -401,7 +401,7 @@ export default function HelpPage() {
         </section>
 
         {/* Help topics */}
-        <section className="flex flex-col gap-4 lg:col-span-4 lg:row-start-2">
+        <section data-mochi="help-topics" className="flex flex-col gap-4 lg:col-span-4 lg:row-start-2">
           <h2 className="text-[28px] md:text-[32px] leading-8 font-semibold">Help topics</h2>
           {!topics.data ? (
             <div className="grid grid-cols-2 gap-[14px]">

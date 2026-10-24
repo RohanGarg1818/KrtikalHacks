@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { api, ApiError, errorMessage, streamUrl } from "./api";
+import { mochiEmit } from "./mochi-bus";
 import type {
   AgentJob,
   AgentStep,
@@ -586,6 +587,8 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
   // One start request at a time: a double click must not send a second POST (whose 409 would
   // otherwise read as an error while the first run is starting fine).
   const inFlight = useRef(false);
+  /** Runs started from this tab: only these are announced to Mochi (attaching to old runs stays silent). */
+  const startedHere = useRef(new Set<string>());
   const [starting, setStarting] = useState(false);
 
   /** Follows this product's already-active run, if any; returns its id. */
@@ -610,6 +613,8 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
           { method: "POST", json: body ?? {} },
         );
         attach(run_id, total_jobs ?? estimated_credits ?? 0);
+        startedHere.current.add(run_id);
+        mochiEmit({ type: "run", phase: "start", runId: run_id, total: total_jobs ?? estimated_credits ?? 0 });
         return run_id;
       } catch (e) {
         if (e instanceof ApiError && e.status === 409) {
@@ -639,6 +644,35 @@ export function useRun(productId: string | null, onUpdate?: () => void) {
   }, [teardown]);
 
   const finished = !!run && (run.phase === "done" || run.phase === "failed" || run.phase === "error");
+  useEffect(() => {
+    if (!run || !finished || !startedHere.current.has(run.runId)) return;
+    startedHere.current.delete(run.runId);
+    mochiEmit({ type: "run", phase: run.phase === "done" ? "done" : "failed", runId: run.runId, total: run.total, failed: run.failed });
+  }, [run, finished]);
+  // Mid-run milestones (each once per run): first fresh result, halfway, first stock-out found.
+  const milestones = useRef<{ runId: string; sent: Set<string> }>({ runId: "", sent: new Set() });
+  useEffect(() => {
+    if (!run || finished || !startedHere.current.has(run.runId)) return;
+    if (milestones.current.runId !== run.runId) milestones.current = { runId: run.runId, sent: new Set() };
+    const sent = milestones.current.sent;
+    const ok = Math.max(0, run.completed - run.failed);
+    const total = Math.max(run.total, run.completed);
+    const emit = (milestone: "first" | "half" | "oos") => {
+      sent.add(milestone);
+      mochiEmit({ type: "run", phase: "progress", runId: run.runId, milestone, total, done: run.completed });
+    };
+    if (!sent.has("oos") && run.order.some((k) => run.jobs[k]?.phase === "done" && run.jobs[k]?.result?.in_stock === false)) emit("oos");
+    else if (!sent.has("half") && total >= 4 && run.completed >= total / 2 && run.completed < total) emit("half");
+    else if (!sent.has("first") && !sent.has("half") && ok >= 1 && total > 1) emit("first");
+  }, [run, finished]);
+  // Leaving the page stops following: tell Mochi so it doesn't wait for an end it will never hear.
+  useEffect(() => {
+    const started = startedHere.current;
+    return () => {
+      started.forEach((runId) => mochiEmit({ type: "run", phase: "detach", runId }));
+      started.clear();
+    };
+  }, []);
   const progress: RunProgress | null = run && {
     runId: run.runId,
     done: Math.max(0, run.completed - run.failed),

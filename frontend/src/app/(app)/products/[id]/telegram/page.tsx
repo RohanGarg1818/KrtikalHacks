@@ -339,7 +339,9 @@ function TelegramFlow({ id }: { id: string }) {
             </div>
           )}
 
-          <Stepper step={step} />
+          <div data-mochi="tg-steps">
+            <Stepper step={step} />
+          </div>
 
           <AnimatePresence mode="wait" initial={false} custom={view.dir}>
           <motion.div key={step} className="min-w-0" custom={view.dir} variants={stepCard} initial="enter" animate="center" exit="exit">

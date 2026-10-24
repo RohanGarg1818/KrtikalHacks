@@ -233,7 +233,7 @@ function AgentsInner() {
 
   return (
     <div className="flex flex-col gap-10">
-      <header className="flex flex-wrap items-end justify-between gap-4">
+      <header data-mochi="agents-head" className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-col gap-2 max-w-[720px]">
           <p className="eyebrow text-slate">TinyFish web agents</p>
           <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px]">Agents</h1>
@@ -266,8 +266,8 @@ function AgentsInner() {
         <Skeleton className="h-[150px] rounded-[20px]" />
       )}
 
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        <div className="lg:col-span-4 flex flex-col gap-4 min-w-0">
+      <section data-mochi="agents-runs" className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div data-mochi="agents-runlist" className="lg:col-span-4 flex flex-col gap-4 min-w-0">
           <div className="section-head">
             <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Recent runs</h2>
           </div>
@@ -299,26 +299,28 @@ function AgentsInner() {
           )}
         </div>
 
-        <div className="lg:col-span-8 min-w-0 flex flex-col gap-4">
+        <div data-mochi="agents-replay" className="lg:col-span-8 min-w-0 flex flex-col gap-4">
           {selected ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-[15px] text-ink/80">
-                  {isActiveRunStatus(selected.status) ? "Live — following this run as it happens." : "Replaying the stored agent traces for this run."}
-                  {selected.started_at && <> Started {formatDateTime(selected.started_at)}.</>}
-                </p>
-                <Link href={`/products/${selected.product_id}`} className="btn btn-ghost btn-sm">
-                  Open product →
-                </Link>
+              <div data-mochi="agents-player" className="flex flex-col gap-4 min-w-0">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[15px] text-ink/80">
+                    {isActiveRunStatus(selected.status) ? "Live — following this run as it happens." : "Replaying the stored agent traces for this run."}
+                    {selected.started_at && <> Started {formatDateTime(selected.started_at)}.</>}
+                  </p>
+                  <Link href={`/products/${selected.product_id}`} className="btn btn-ghost btn-sm">
+                    Open product →
+                  </Link>
+                </div>
+                {isActiveRunStatus(selected.status) ? (
+                  <LivePanel key={selected.id} run={selected} onDone={() => {
+                      runs.mutate();
+                      usage.mutate();
+                    }} />
+                ) : (
+                  <ReplayPanel key={selected.id} run={selected} />
+                )}
               </div>
-              {isActiveRunStatus(selected.status) ? (
-                <LivePanel key={selected.id} run={selected} onDone={() => {
-                    runs.mutate();
-                    usage.mutate();
-                  }} />
-              ) : (
-                <ReplayPanel key={selected.id} run={selected} />
-              )}
               <CheckDetails key={`details-${selected.id}`} runId={selected.id} active={isActiveRunStatus(selected.status)} />
             </>
           ) : runs.data && list.length === 0 ? null : (

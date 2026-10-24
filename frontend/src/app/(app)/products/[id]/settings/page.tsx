@@ -880,7 +880,7 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                     <input type="number" inputMode="decimal" min={0} step="0.01" className={INPUT} value={guardForm.mrp} onChange={(e) => editGuard({ mrp: e.target.value })} />
                   </Field>
                 </div>
-                <fieldset className="mt-6 min-w-0">
+                <fieldset data-mochi="price-sensitivity" className="mt-6 min-w-0">
                   <legend className="text-[14px] leading-5 font-semibold pb-2">Price sensitivity</legend>
                   <div className="grid gap-3 sm:grid-cols-3">
                     {SENSITIVITY_OPTIONS.map((o) => {
@@ -914,7 +914,7 @@ export default function ProductSettingsPage({ params }: { params: Promise<{ id: 
                   <ToggleRow label="Round to price points (₹49, ₹99…)" checked={guardForm.round_to_price_point} onChange={(v) => editGuard({ round_to_price_point: v })} />
                   <ToggleRow label="Every action needs my approval" checked={guardForm.approval_required} onChange={(v) => editGuard({ approval_required: v })} />
                 </div>
-                <p className="mt-3 text-[14px] leading-[21px] bg-linen border-2 border-ink/20 rounded-[12px] px-4 py-3" aria-live="polite">
+                <p data-mochi="safe-floor" className="mt-3 text-[14px] leading-[21px] bg-linen border-2 border-ink/20 rounded-[12px] px-4 py-3" aria-live="polite">
                   {bounds.safeFloor != null ? (
                     <>
                       Safe floor <b>{rupees(bounds.safeFloor, 2)}</b>

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Fraunces, Inter } from "next/font/google";
 import MotionProviders from "@/components/motion/MotionProviders";
+import Mochi from "@/components/mochi/Mochi";
 import "./globals.css";
 
 // Variable Fraunces with the SOFT/WONK axes the design uses.
@@ -18,7 +19,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body className={`${fraunces.variable} ${inter.variable}`}>
-        <MotionProviders>{children}</MotionProviders>
+        <MotionProviders>
+          {children}
+          <Mochi />
+        </MotionProviders>
       </body>
     </html>
   );

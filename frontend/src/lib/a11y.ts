@@ -60,10 +60,13 @@ export function useFocusTrap(
       const first = items[0];
       const last = items[items.length - 1];
       const current = document.activeElement;
-      if (e.shiftKey && (current === first || !root.contains(current))) {
+      // Focus on a non-tabbable spot inside the box (e.g. a tabindex=-1 wrapper) counts as outside
+      // the cycle, otherwise the browser's own Tab order could step out of the dialog.
+      const offCycle = !items.includes(current as HTMLElement);
+      if (e.shiftKey && (current === first || offCycle)) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && (current === last || !root.contains(current))) {
+      } else if (!e.shiftKey && (current === last || offCycle)) {
         e.preventDefault();
         first.focus();
       }

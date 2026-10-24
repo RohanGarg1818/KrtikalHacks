@@ -1,5 +1,6 @@
 import { mutate } from "swr";
 import { api, ApiError, errorMessage } from "./api";
+import { mochiEmit } from "./mochi-bus";
 import { toast } from "./toast";
 import type { DecisionResult } from "./types";
 
@@ -7,7 +8,10 @@ export type RecommendationVerb = "approve" | "dismiss" | "send-telegram" | "done
 
 /** POST a decision / action-list change for one recommendation. */
 export function actOnRecommendation(id: string, verb: RecommendationVerb) {
-  return api<DecisionResult>(`/recommendations/${encodeURIComponent(id)}/${verb}`, { method: "POST" });
+  return api<DecisionResult>(`/recommendations/${encodeURIComponent(id)}/${verb}`, { method: "POST" }).then((res) => {
+    mochiEmit({ type: "rec", verb });
+    return res;
+  });
 }
 
 /** Revalidate every action-list and dashboard view after a decision. */

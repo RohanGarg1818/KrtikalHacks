@@ -114,7 +114,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
       {run.run && <AgentConsole run={run.run} names={names} onClose={run.reset} />}
 
       {/* KPI tiles */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6 stagger">
+      <section data-mochi="product-kpis" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6 stagger">
         {overview.error && !overview.data ? (
           <div className="sm:col-span-2 xl:col-span-4">
             <ErrorCard error={overview.error} onRetry={() => overview.mutate()} />
@@ -132,7 +132,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
       </section>
 
       {/* Actions + AI summary */}
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <section data-mochi="product-actions" className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-7 flex flex-col min-w-0">
           <div className="section-head">
             <h2 className={H2}>Recommended actions</h2>
@@ -140,7 +140,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
               {busy === "recommendations" ? "Thinking…" : "Refresh"}
             </button>
           </div>
-          <div className="flex flex-col gap-5 pt-5 stagger">
+          <div data-mochi="product-recs" className="flex flex-col gap-5 pt-5 stagger">
             {overview.error && !overview.data ? (
               <ErrorCard error={overview.error} onRetry={() => overview.mutate()} />
             ) : !overview.data ? (
@@ -164,11 +164,11 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
           <div className="section-head mt-10">
             <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Action plan</h2>
           </div>
-          <div className="pt-5">
+          <div data-mochi="product-plan" className="pt-5">
             <ActionPlan productId={id} />
           </div>
           {p && (
-            <div className="mt-6 flex items-start gap-3 border-2 border-dashed border-ink/40 rounded-[16px] px-5 py-4">
+            <div data-mochi="product-guardrails" className="mt-6 flex items-start gap-3 border-2 border-dashed border-ink/40 rounded-[16px] px-5 py-4">
               <span className="eyebrow text-slate shrink-0">Guardrails</span>
               <p className="text-[15px] leading-[22.5px] text-ink/80">
                 Never below the {rupees(p.floor_price)} floor or a {p.min_margin_pct}% margin; at most {p.max_change_pct}% price change a day.
@@ -207,7 +207,7 @@ export default function ProductDashboard({ params }: { params: Promise<{ id: str
       </section>
 
       {/* Competitor table */}
-      <section className="flex flex-col gap-6">
+      <section data-mochi="product-competitors" className="flex flex-col gap-6">
         <div className="section-head">
           <h2 className={H2}>You vs competitors</h2>
         </div>

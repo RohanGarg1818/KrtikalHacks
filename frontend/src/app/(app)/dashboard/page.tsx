@@ -69,7 +69,7 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-10">
       {/* Greeting */}
-      <section className="section-head flex-wrap items-end">
+      <section data-mochi="dash-greeting" className="section-head flex-wrap items-end">
         <div>
           <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px]">
             {hello}, {me.data?.profile.name.split(" ")[0] ?? "…"}
@@ -82,14 +82,14 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-4">
           {attention.length > 0 && <Sticker>{attention.length} need attention</Sticker>}
-          <button className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
+          <button data-mochi="add-product" className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
             <img src="/figma/shell/plus-circle.svg" alt="" width={20} height={20} />Add product
           </button>
         </div>
       </section>
 
       {/* Stat tiles */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
+      <section data-mochi="dash-tiles" className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
         <div className="card text-ink flex flex-col justify-between p-[26px] min-h-[200px]">
           <div className="flex items-center justify-between">
             <p className="eyebrow">{me.data?.plan ?? "…"}</p>
@@ -126,7 +126,7 @@ export default function DashboardPage() {
       </section>
 
       {/* Products */}
-      <section className="flex flex-col gap-6">
+      <section data-mochi="dash-products" className="flex flex-col gap-6">
         <div className="section-head flex-wrap">
           <h2 className="text-[32px] leading-10 tracking-[-0.64px]">Your products</h2>
           <div className="flex items-center gap-4 flex-wrap">
@@ -168,12 +168,12 @@ export default function DashboardPage() {
       </section>
 
       {/* Actions + alerts */}
-      <section className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <section data-mochi="dash-actions" className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-7 flex flex-col">
           <div className="section-head">
             <h2 className="text-[32px] leading-10 tracking-[-0.64px]">Recommended actions</h2>
           </div>
-          <div className="flex flex-col gap-5 pt-5 stagger">
+          <div data-mochi="dash-recs" className="flex flex-col gap-5 pt-5 stagger">
             {!dash.data ? (
               <CardSkeleton />
             ) : dash.data.recommendations.length === 0 ? (
@@ -185,7 +185,7 @@ export default function DashboardPage() {
           <div className="section-head mt-10">
             <h2 className="text-[28px] leading-9 tracking-[-0.56px]">Action plan</h2>
           </div>
-          <div className="pt-5">
+          <div data-mochi="dash-plan" className="pt-5">
             <ActionPlan showProduct />
           </div>
         </div>
@@ -219,7 +219,7 @@ export default function DashboardPage() {
       </section>
 
       {/* Telegram band */}
-      <section className="card bg-sage p-[34px] min-h-[110px] flex flex-wrap items-center justify-between gap-6">
+      <section data-mochi="dash-telegram" className="card bg-sage p-[34px] min-h-[110px] flex flex-wrap items-center justify-between gap-6">
         <div className="flex items-center gap-4">
           <p className="font-display text-[56px] leading-none tracking-[-1.12px]">
             {tgConnected.length}/{all.length}

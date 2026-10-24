@@ -140,7 +140,7 @@ function LiveMesh() {
 
 function Hero() {
   return (
-    <section className="bg-slate border-b-2 border-ink pt-16 pb-16 lg:pt-24 lg:pb-[98px]">
+    <section data-mochi="hero" className="bg-slate border-b-2 border-ink pt-16 pb-16 lg:pt-24 lg:pb-[98px]">
       <div className={`${WRAP} grid gap-12 lg:grid-cols-12 items-center`}>
         <div className="lg:col-span-7 lg:pr-4 flex flex-col items-start">
           <span className="bg-sand border-2 border-ink rounded-[8px] shadow-[3px_3px_0_var(--ink)] px-4 pt-[11px] pb-[9px] text-[11px] sm:text-[13px] leading-[19.5px] font-extrabold tracking-[2.6px] uppercase">
@@ -155,7 +155,7 @@ function Hero() {
             ShelfSense watches your competitors and your stock in every pincode, then tells you exactly how to win, without a price war.
           </p>
           <div className="mt-8 flex flex-wrap gap-4">
-            <Link href="/dashboard" className={`flex items-center gap-2 h-14 px-[34px] rounded-[20px] border-2 border-ink bg-sand text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
+            <Link href="/dashboard" data-mochi="hero-cta" className={`flex items-center gap-2 h-14 px-[34px] rounded-[20px] border-2 border-ink bg-sand text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
               Map my product <Icon name="heroArrow" w={13.33} h={13.33} />
             </Link>
             <a href="#how" className={`flex items-center h-14 px-[34px] rounded-[20px] border-2 border-ink bg-linen text-[18px] leading-[28px] font-bold shadow-[6px_6px_0_var(--ink)] ${PRESS} active:translate-x-1.5 active:translate-y-1.5`}>
@@ -779,7 +779,7 @@ function Pricing() {
 
 function Closing() {
   return (
-    <section className="bg-sand border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px]">
+    <section data-mochi="closing" className="bg-sand border-b-2 border-ink py-20 lg:pt-28 lg:pb-[114px]">
       <div className="mx-auto max-w-[880px] px-4 sm:px-5 flex flex-col items-center gap-6 text-center">
         <h2 className="text-[44px] leading-[50px] sm:text-[64px] sm:leading-[70px] lg:text-[80px] lg:leading-[84px]">
           “Others show the listed price.

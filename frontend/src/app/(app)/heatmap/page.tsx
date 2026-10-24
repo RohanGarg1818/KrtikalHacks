@@ -359,7 +359,7 @@ function ProductHeatmap({
       )}
 
       {/* Filters */}
-      <section className="flex flex-wrap items-center justify-between gap-4 pb-8">
+      <section data-mochi="heatmap-filters" className="flex flex-wrap items-center justify-between gap-4 pb-8">
         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-4">
           <Menu
             label={regionLabel}
@@ -412,6 +412,7 @@ function ProductHeatmap({
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:items-start">
         {/* Map card */}
         <section
+          data-mochi="heatmap-map"
           aria-label="Shelf availability map"
           className="relative h-[460px] overflow-hidden rounded-[20px] border-2 border-ink bg-linen shadow-[6px_6px_0_var(--ink)] sm:h-[560px] lg:col-span-8 lg:h-auto lg:min-h-[844px] lg:self-stretch"
         >
@@ -498,7 +499,7 @@ function ProductHeatmap({
       </div>
 
       {/* Snapshot bar */}
-      <section className="mt-8 flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-[20px] border-2 border-ink bg-sand px-5 py-4 shadow-[6px_6px_0_var(--ink)] sm:px-[34px] lg:h-[72px] lg:py-0">
+      <section data-mochi="heatmap-snapshot" className="mt-8 flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-[20px] border-2 border-ink bg-sand px-5 py-4 shadow-[6px_6px_0_var(--ink)] sm:px-[34px] lg:h-[72px] lg:py-0">
         <div className="flex items-center gap-2">
           <img src={`${A}/imgContainer20.svg`} alt="" width={18} height={18} />
           <span className="text-[18px] font-semibold leading-[27px]">Snapshot</span>

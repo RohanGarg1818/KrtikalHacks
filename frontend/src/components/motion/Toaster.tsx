@@ -16,7 +16,7 @@ export default function Toaster() {
   const [items, setItems] = useState<Toast[]>([]);
   useEffect(() => subscribeToasts(setItems), []);
   return (
-    <div aria-live="polite" className="fixed bottom-4 right-4 left-4 sm:left-auto z-[2500] flex flex-col items-end gap-3 pointer-events-none">
+    <div data-toaster aria-live="polite" className="fixed bottom-4 right-4 left-4 sm:left-auto z-[2500] flex flex-col items-end gap-3 pointer-events-none">
       <AnimatePresence initial={false}>
         {items.map((t) => (
           <motion.div

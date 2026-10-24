@@ -126,7 +126,7 @@ function ProductsView() {
   return (
     <div className="flex flex-col gap-8">
       {/* Page header */}
-      <section className="flex flex-wrap items-end justify-between gap-x-6 gap-y-5">
+      <section data-mochi="products-head" className="flex flex-wrap items-end justify-between gap-x-6 gap-y-5">
         <div className="flex flex-col gap-2">
           <h1 className="text-[44px] leading-[48px] sm:text-[56px] sm:leading-[60px] tracking-[-1.4px]">Products</h1>
           <p className="text-[16px] leading-[22px]">
@@ -141,7 +141,7 @@ function ProductsView() {
           {totals.attention > 0 && (
             <Sticker>{totals.attention} need attention</Sticker>
           )}
-          <button className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
+          <button data-mochi="add-product" className="btn btn-primary px-[26px]" onClick={() => setAdding(true)}>
             <img src={`${A}/imgContainer.svg`} alt="" width={13.083} height={13.083} />
             Add product
           </button>
@@ -163,7 +163,7 @@ function ProductsView() {
       </section>
 
       {/* Toolbar */}
-      <section className="flex flex-wrap items-center justify-between gap-4 py-1">
+      <section data-mochi="products-toolbar" className="flex flex-wrap items-center justify-between gap-4 py-1">
         <div className="flex flex-wrap items-center gap-3" role="group" aria-label="Filter products">
           {visibleFilters.map((f) => {
             const active = filter === f.key;
@@ -263,15 +263,17 @@ function ProductsView() {
         </Empty>
       ) : (
         <>
-          {view === "list" && (
-            <div className="hidden md:block">
-              <ProductTable rows={shown} />
+          <div data-mochi="products-list">
+            {view === "list" && (
+              <div className="hidden md:block">
+                <ProductTable rows={shown} />
+              </div>
+            )}
+            <div className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 stagger ${view === "list" ? "md:hidden" : ""}`}>
+              {shown.map((p) => (
+                <ProductGridCard key={p.id} p={p} />
+              ))}
             </div>
-          )}
-          <div className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 stagger ${view === "list" ? "md:hidden" : ""}`}>
-            {shown.map((p) => (
-              <ProductGridCard key={p.id} p={p} />
-            ))}
           </div>
 
           {/* Pagination */}
