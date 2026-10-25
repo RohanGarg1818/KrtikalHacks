@@ -8,7 +8,7 @@ from .common import PincodeCode, Platform
 
 class RunCreate(BaseModel):
     pincodes: list[PincodeCode] | None = Field(default=None, max_length=200)
-    platforms: list[Platform] | None = Field(default=None, max_length=5)
+    platforms: list[Platform] | None = Field(default=None, max_length=6)
 
 
 class RunCreated(BaseModel):

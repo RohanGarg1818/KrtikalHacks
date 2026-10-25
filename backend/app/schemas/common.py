@@ -14,7 +14,9 @@ from pydantic import (
     model_validator,
 )
 
-Platform = Literal["blinkit", "zepto", "instamart", "amazon", "flipkart"]
+# "store" is the seller's own ShelfSense Store: stock and price come from the seller, never TinyFish.
+Platform = Literal["blinkit", "zepto", "instamart", "amazon", "flipkart", "store"]
+STORE_PLATFORM = "store"
 PLATFORMS: tuple[str, ...] = get_args(Platform)
 
 CheckFrequency = Literal["3h", "6h", "12h", "daily", "weekly"]

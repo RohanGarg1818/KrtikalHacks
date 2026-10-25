@@ -14,6 +14,7 @@ export const PLATFORM_STYLE: Record<string, { bg: string; fg: string; mark: stri
   instamart: { bg: "#fc8019", fg: "#0d1b2a", mark: "i" },
   amazon: { bg: "#232f3e", fg: "#ff9900", mark: "a" },
   flipkart: { bg: "#2874f0", fg: "#f4f1de", mark: "f" },
+  store: { bg: "#778d7a", fg: "#0d1b2a", mark: "s" },
 };
 
 export function PlatformMark({ platform, size = 28 }: { platform: string; size?: number }) {

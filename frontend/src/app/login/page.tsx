@@ -63,6 +63,7 @@ function SupabaseLogin({ next }: { next: string }) {
   const [intent, setIntent] = useState<Intent>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -83,8 +84,9 @@ function SupabaseLogin({ next }: { next: string }) {
   const checkSession = useCallback(async () => {
     setVerify("checking");
     try {
-      await api("/me", { noAuthRedirect: true });
-      router.replace(next);
+      const me = await api<{ profile: { business_name: string | null } }>("/me", { noAuthRedirect: true });
+      // A brand-new seller has no business profile yet: finish it before the app.
+      router.replace(me.profile.business_name ? next : "/onboarding");
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 409)) {
         await signOutLocal();
@@ -125,10 +127,15 @@ function SupabaseLogin({ next }: { next: string }) {
         if (err) throw err;
         setNotice(`We sent a sign-in link to ${addr}. Open it on this device to continue.`);
       } else if (intent === "signup") {
+        // The name lands in Supabase user_metadata; the backend copies it on first sign-in.
+        // New sellers finish their business profile on /onboarding.
         const { data, error: err } = await sb.auth.signUp({
           email: addr,
           password,
-          options: { emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent(next)}` },
+          options: {
+            data: { full_name: fullName.trim() },
+            emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent("/onboarding")}`,
+          },
         });
         if (err) throw err;
         // With a session the effect above verifies it and continues.
@@ -196,6 +203,21 @@ function SupabaseLogin({ next }: { next: string }) {
       </div>
 
       <form className="flex flex-col gap-4 mt-6" onSubmit={submit}>
+        {method === "password" && intent === "signup" && (
+          <label className="flex flex-col gap-1.5">
+            <span className="label">Your name</span>
+            <input
+              id="signup-name"
+              className="input"
+              autoComplete="name"
+              required
+              maxLength={200}
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="Riya Sharma"
+            />
+          </label>
+        )}
         <label className="flex flex-col gap-1.5">
           <span className="label">Email</span>
           <input

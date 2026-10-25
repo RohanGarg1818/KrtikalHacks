@@ -6,6 +6,7 @@ export const PLATFORM_LABEL: Record<string, string> = {
   instamart: "Instamart",
   amazon: "Amazon",
   flipkart: "Flipkart",
+  store: "Your store",
 };
 
 export const platformLabel = (p: string | null | undefined) => (p ? PLATFORM_LABEL[p] ?? p : "All platforms");

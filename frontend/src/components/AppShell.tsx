@@ -16,6 +16,7 @@ import ActiveIndicator, { IndicatorGroup } from "./motion/ActiveIndicator";
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: "nav-dashboard" },
   { href: "/products", label: "Products", icon: "nav-products" },
+  { href: "/store", label: "My Store", icon: "nav-products" },
   { href: "/heatmap", label: "Heatmaps", icon: "nav-heatmaps" },
   { href: "/agents", label: "Agents", icon: "agents" },
   { href: "/alerts", label: "Alerts", icon: "alerts" },
@@ -193,6 +194,7 @@ function useCrumbs(): string[] {
   if (pathname.startsWith("/heatmap")) return ["Products", "Heatmap"];
   if (pathname.startsWith("/agents")) return ["TinyFish", "Agents"];
   if (pathname.startsWith("/alerts")) return ["Alerts"];
+  if (pathname.startsWith("/store")) return ["Catalog", "My Store"];
   if (pathname.startsWith("/help")) return ["Help Centre"];
   if (pathname.startsWith("/settings")) return ["Settings"];
   return [];

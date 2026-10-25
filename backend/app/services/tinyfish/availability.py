@@ -52,7 +52,7 @@ def skipped_platforms(settings: Settings, platforms: Iterable[str]) -> list[str]
     """Selected apps a run leaves out because they are not checked live."""
     if not settings.tinyfish_enabled:
         return []
-    return sorted({p for p in platforms if p not in settings.live_platforms})
+    return sorted({p for p in platforms if p not in settings.live_platforms and p != "store"})
 
 
 def unavailable_reason(platform: str) -> str:

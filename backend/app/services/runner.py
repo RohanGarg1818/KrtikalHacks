@@ -199,7 +199,11 @@ async def plan_jobs(
     """Jobs exactly as ``create_run`` will run them (live mode drops apps that
     are not in TINYFISH_LIVE_PLATFORMS)."""
     settings = get_settings()
-    jobs = await build_jobs(session, product, platforms, pincodes)
+    # The seller's own store is updated by the seller (services/store.py), never checked.
+    jobs = [
+        job for job in await build_jobs(session, product, platforms, pincodes)
+        if job.platform != "store"
+    ]
     skipped = skipped_platforms(settings, platforms)
     if skipped:
         jobs = [job for job in jobs if job.platform not in skipped]
@@ -232,6 +236,15 @@ async def create_run(
                     "code": "no_live_platforms",
                     "message": "None of the selected apps can be checked live. Live checks "
                     f"cover: {', '.join(sorted(settings.live_platforms))}.",
+                },
+            )
+        if set(platforms) == {"store"}:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "store_only",
+                    "message": "Your store's stock and price update from My Store as you change "
+                    "them. Add an app like Zepto in product settings to check rivals live.",
                 },
             )
         raise HTTPException(status_code=422, detail="No check jobs to run")
@@ -698,7 +711,7 @@ async def execute_run(
                 # its verdict stands.
                 final_status = "failed"
                 logger.warning("run %s was closed elsewhere; keeping its status", run_id)
-            await _post_run_hooks(session, run_id, product_id)
+            await post_run_hooks(session, run_id, product_id)
     except asyncio.CancelledError:
         final_status = "failed"
         logger.warning("run %s cancelled", run_id)
@@ -735,7 +748,7 @@ async def execute_run(
         )
 
 
-async def _post_run_hooks(session: AsyncSession, run_id: str, product_id: str) -> None:
+async def post_run_hooks(session: AsyncSession, run_id: str, product_id: str) -> None:
     try:
         await detect_changes(session, run_id=run_id, product_id=product_id)
     except Exception:

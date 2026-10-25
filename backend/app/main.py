@@ -32,6 +32,7 @@ from .api.notifications import router as notifications_router
 from .api.products import router as products_router
 from .api.runs import router as runs_router
 from .api.settings import router as settings_router
+from .api.store import router as store_router
 from .config import get_settings
 from .db import dispose_db
 
@@ -257,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(me_router, prefix="/api")
     app.include_router(dashboard_router, prefix="/api")
     app.include_router(catchup_router, prefix="/api")
+    app.include_router(store_router, prefix="/api")
     app.include_router(catalog_router, prefix="/api")
     app.include_router(products_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")

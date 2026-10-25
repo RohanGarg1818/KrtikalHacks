@@ -171,7 +171,7 @@ class ProductCard(ProductResponse):
 
 
 class PincodeSelection(BaseModel):
-    platforms: list[Platform] = Field(min_length=1, max_length=5)
+    platforms: list[Platform] = Field(min_length=1, max_length=6)
     pincodes: list[PincodeCode] = Field(
         min_length=1, max_length=MAX_PINCODES_PER_SELECTION
     )

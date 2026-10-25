@@ -4,7 +4,14 @@ from .base import Base
 from .chat import ChatConversation, ChatMessage
 from .checks import ChangeEvent, CheckResult, CheckRun, CreditLedger
 from .intelligence import AISummary, Alert, AlertRule, Recommendation, ReviewInsight
-from .product import Competitor, Pincode, Product, ProductListing, ProductPincode
+from .product import (
+    Competitor,
+    Pincode,
+    Product,
+    ProductListing,
+    ProductPincode,
+    StoreListing,
+)
 from .telegram import TelegramLink, TelegramLinkAttempt, TelegramLinkCode
 from .user import Subscription, User, UserSettings
 
@@ -26,6 +33,7 @@ __all__ = [
     "ProductPincode",
     "Recommendation",
     "ReviewInsight",
+    "StoreListing",
     "Subscription",
     "TelegramLink",
     "TelegramLinkAttempt",

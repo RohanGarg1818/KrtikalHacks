@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, ForeignKey, String, false
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UTCDateTime, UUIDPrimaryKeyMixin, utcnow
@@ -38,6 +38,20 @@ class Product(UUIDPrimaryKeyMixin, Base):
     )
     # "Mute 24h": alerts still land in the inbox, but Telegram delivery is skipped until this passes.
     alert_muted_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class StoreListing(Base):
+    """The seller's own ShelfSense Store listing: price and stock they set by hand."""
+
+    __tablename__ = "store_listings"
+    product_id: Mapped[str] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), primary_key=True
+    )
+    price: Mapped[float] = mapped_column(Float)
+    mrp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stock: Mapped[int] = mapped_column(Integer, default=0)
+    eta_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class ProductListing(UUIDPrimaryKeyMixin, Base):

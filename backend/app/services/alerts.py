@@ -465,6 +465,9 @@ def _is_worse(kind: str, old_state: dict, new_state: dict, threshold: float) -> 
 
 def _severity_for(kind: str, ev: _Evaluation, items: list[dict], threshold: float) -> str:
     if kind in ("oos_any", "oos_area"):
+        # The seller's own store running dry is always worth an instant push.
+        if any(i["platform"] == "store" for i in items):
+            return "urgent"
         fraction = len(items) / max(1, len(ev.seller_latest))
         return "urgent" if fraction >= OOS_URGENT_FRACTION else "important"
     if kind == "price_gap_pct":
@@ -478,16 +481,22 @@ def _severity_for(kind: str, ev: _Evaluation, items: list[dict], threshold: floa
     return "important"
 
 
+def _platform_name(platform: str) -> str:
+    return "your ShelfSense Store" if platform == "store" else platform.capitalize()
+
+
 def _oos_message(ev: _Evaluation, items: list[dict], event: str) -> str:
     by_platform: dict[str, list[str]] = {}
     for i in items:
         by_platform.setdefault(i["platform"], []).append(ev.area(i["pincode"]))
     where = "; ".join(
-        f"{platform.capitalize()} ({', '.join(sorted(set(areas)))})"
+        f"{_platform_name(platform)} ({', '.join(sorted(set(areas)))})"
         for platform, areas in sorted(by_platform.items())
     )
     n = len(items)
     lead = "Still worsening — " if event == "worsened" else ""
+    if any(i["platform"] == "store" for i in items):
+        lead = "🚨 " + lead
     return f"{lead}{ev.product.name} is out of stock in {n} spot{'s' if n != 1 else ''}: {where}."
 
 

@@ -581,6 +581,20 @@ export interface PlanChange {
   }[];
 }
 
+/** `GET /store`: one product in the seller's own ShelfSense Store. */
+export interface StoreItem {
+  product_id: string;
+  name: string;
+  brand: string | null;
+  price: number;
+  mrp: number | null;
+  stock: number;
+  eta_minutes: number;
+  pincodes: string[];
+  telegram_connected: boolean;
+  updated_at: string;
+}
+
 /** `GET /products/{id}/check-quota`: manual re-checks left this month (automatic checks run separately). */
 export interface CheckQuota {
   limit: number;
